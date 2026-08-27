@@ -43,8 +43,13 @@ class ResearchArchive {
             }
 
             add("network.har", buildHar().toString(2).toByteArray(Charsets.UTF_8))
+            add("api-summary.json", buildApiSummary().toString(2).toByteArray(Charsets.UTF_8))
+            add("actions.json", buildSourceLog(setOf("user-action", "navigation", "form-submit", "history")).toString(2).toByteArray(Charsets.UTF_8))
+            add("dom-mutations.json", buildSourceLog(setOf("dom-mutation", "shadow-root", "custom-element")).toString(2).toByteArray(Charsets.UTF_8))
+            add("realtime.json", buildSourceLog(setOf("websocket-open", "websocket-state", "websocket-send", "websocket-receive", "sse-open", "sse-state", "sse-message")).toString(2).toByteArray(Charsets.UTF_8))
+            add("performance.json", buildSourceLog(setOf("performance", "long-task", "resource-timing", "navigation-timing")).toString(2).toByteArray(Charsets.UTF_8))
             add("raw-events.json", JSONObject()
-                .put("format", "evrasia-research-v3")
+                .put("format", "evrasia-research-v4")
                 .put("exportedAt", System.currentTimeMillis())
                 .put("page", pageUrl)
                 .put("records", records)
@@ -75,6 +80,88 @@ class ResearchArchive {
         }
     }
 
+    private fun buildSourceLog(sources: Set<String>): JSONArray {
+        val out = JSONArray()
+        synchronized(this) {
+            for (i in 0 until records.length()) {
+                val r = records.optJSONObject(i) ?: continue
+                if (sources.contains(r.optString("source", ""))) out.put(JSONObject(r.toString()))
+            }
+        }
+        return out
+    }
+
+    private fun buildApiSummary(): JSONObject {
+        val endpoints = linkedMapOf<String, JSONObject>()
+        val routes = linkedSetOf<String>()
+        synchronized(this) {
+            for (i in 0 until records.length()) {
+                val r = records.optJSONObject(i) ?: continue
+                val source = r.optString("source", "")
+                if (source == "navigation" || source == "history" || source == "user-action") {
+                    r.optString("page", r.optString("url", "")).takeIf { it.startsWith("http") }?.let { routes.add(it) }
+                }
+                if (!r.has("url")) continue
+                val url = r.optString("url", "")
+                val method = r.optString("method", "GET").ifBlank { "GET" }.uppercase(Locale.US)
+                if (!(url.startsWith("http://") || url.startsWith("https://") || url.startsWith("ws://") || url.startsWith("wss://"))) continue
+                if (source in setOf("webview", "resource-copy", "script-archive", "console", "performance", "resource-timing")) continue
+                val key = "$method ${normalizeEndpoint(url)}"
+                val e = endpoints.getOrPut(key) {
+                    JSONObject()
+                        .put("method", method)
+                        .put("endpoint", normalizeEndpoint(url))
+                        .put("examples", JSONArray())
+                        .put("statuses", JSONObject())
+                        .put("sources", JSONObject())
+                        .put("count", 0)
+                }
+                e.put("count", e.optInt("count") + 1)
+                incrementObject(e.getJSONObject("sources"), source.ifBlank { "unknown" })
+                if (r.has("status")) incrementObject(e.getJSONObject("statuses"), r.optInt("status").toString())
+                val examples = e.getJSONArray("examples")
+                if (examples.length() < 5) examples.put(url)
+                val body = r.optString("requestBody", "")
+                val graph = r.optJSONObject("graphql")
+                if (graph != null) {
+                    val ops = e.optJSONArray("graphql") ?: JSONArray().also { e.put("graphql", it) }
+                    if (ops.length() < 20) ops.put(JSONObject(graph.toString()))
+                } else if (body.contains("operationName") || body.contains("query")) {
+                    try {
+                        val parsed = JSONObject(body)
+                        if (parsed.has("query") || parsed.has("operationName")) {
+                            val ops = e.optJSONArray("graphql") ?: JSONArray().also { e.put("graphql", it) }
+                            if (ops.length() < 20) ops.put(JSONObject()
+                                .put("operationName", parsed.optString("operationName", ""))
+                                .put("variables", parsed.opt("variables") ?: JSONObject.NULL))
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+        val arr = JSONArray()
+        endpoints.values.sortedByDescending { it.optInt("count") }.forEach { arr.put(it) }
+        return JSONObject()
+            .put("generatedAt", System.currentTimeMillis())
+            .put("endpointCount", arr.length())
+            .put("endpoints", arr)
+            .put("observedPages", JSONArray(routes.toList()))
+    }
+
+    private fun incrementObject(obj: JSONObject, key: String) {
+        obj.put(key, obj.optInt(key, 0) + 1)
+    }
+
+    private fun normalizeEndpoint(url: String): String {
+        return try {
+            val u = URL(url.replaceFirst("ws://", "http://").replaceFirst("wss://", "https://"))
+            val path = u.path
+                .replace(Regex("/[0-9]{2,}"), "/{id}")
+                .replace(Regex("/[0-9a-fA-F]{8}-[0-9a-fA-F-]{20,}"), "/{uuid}")
+            "${u.protocol}://${u.host}${if (u.port > 0 && u.port != u.defaultPort) ":${u.port}" else ""}$path"
+        } catch (_: Exception) { url.substringBefore('?') }
+    }
+
     private fun buildHar(): JSONObject {
         val entries = JSONArray()
         synchronized(this) {
@@ -83,6 +170,7 @@ class ResearchArchive {
                 if (!r.has("url")) continue
                 val url = r.optString("url", "about:blank").ifBlank { "about:blank" }
                 val method = r.optString("method", "GET").ifBlank { "GET" }
+                if (method == "WS") continue
                 val requestHeaders = when {
                     r.has("requestHeaders") -> headersArray(r.optJSONObject("requestHeaders"))
                     r.has("headers") -> headersArray(r.optJSONObject("headers"))
@@ -129,7 +217,7 @@ class ResearchArchive {
         }
         return JSONObject().put("log", JSONObject()
             .put("version", "1.2")
-            .put("creator", JSONObject().put("name", "Evrasia Research").put("version", "3"))
+            .put("creator", JSONObject().put("name", "Evrasia Research").put("version", "4"))
             .put("pages", JSONArray())
             .put("entries", entries))
     }
