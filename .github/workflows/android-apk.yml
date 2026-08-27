@@ -17,18 +17,28 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Determine next release version
+        id: version
+        shell: bash
+        run: |
+          git fetch --tags --force
+          LAST=$(git tag -l 'v[0-9]*' | sed 's/^v//' | grep -E '^[0-9]+$' | sort -n | tail -1)
+          if [ -z "$LAST" ]; then LAST=0; fi
+          NEXT=$((LAST + 1))
+          echo "number=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEXT" >> "$GITHUB_OUTPUT"
       - name: Build APK
         run: gradle :app:assembleDebug
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk evrasia-research-v1.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk evrasia-research-v${{ steps.version.outputs.number }}.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: evrasia-research-v1
-          path: evrasia-research-v1.apk
-      - name: Publish rolling release
+          name: evrasia-research-v${{ steps.version.outputs.number }}
+          path: evrasia-research-v${{ steps.version.outputs.number }}.apk
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1
-          name: Евразия Research v1
-          files: evrasia-research-v1.apk
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Евразия Research v${{ steps.version.outputs.number }}
+          files: evrasia-research-v${{ steps.version.outputs.number }}.apk
           make_latest: true
