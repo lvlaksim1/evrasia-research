@@ -6,18 +6,14 @@
         android:icon="@drawable/ic_web_research"
         android:roundIcon="@drawable/ic_web_research"
         android:usesCleartextTraffic="false">
-        <activity android:name=".WebResearchV10Activity" android:exported="true">
+        <activity android:name=".ResearchHomeActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity android:name=".NetworkDebuggerActivity" android:exported="true" android:label="Network debugger">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+        <activity android:name=".WebResearchV10Activity" android:exported="false" />
+        <activity android:name=".NetworkDebuggerActivity" android:exported="false" android:label="Network debugger" />
         <activity android:name=".WebResearchActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="false" />
     </application>
