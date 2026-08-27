@@ -158,7 +158,7 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
                     typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(activity, 12), if (dropdown) dp(activity, 11) else 0, dp(activity, 12), if (dropdown) dp(activity, 11) else 0)
-                    background = rounded(activity, if (dropdown) surface2 else surface2, 10, if (dropdown) line else line)
+                    background = rounded(activity, surface2, 10, line)
                 }
                 override fun getView(position: Int, convertView: View?, parent: ViewGroup): View = item(position, false)
                 override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View = item(position, true)
@@ -234,7 +234,7 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
 
             val filterRow = root.getChildAt(2) as? LinearLayout
             filterRow?.setBackgroundColor(ink)
-            styleTree(activity, filterRow)
+            filterRow?.let { styleTree(activity, it) }
 
             (root.getChildAt(3) as? TextView)?.apply {
                 setTextColor(muted)
