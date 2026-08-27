@@ -60,20 +60,20 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
         val isDebugger = activity is NetworkDebuggerActivity
         val button = Button(activity).apply {
             tag = "web-research-screen-switcher"
-            text = if (isDebugger) "← БРАУЗЕР" else "NETWORK"
+            text = if (isDebugger) "← НАЗАД К БРАУЗЕРУ" else "ОТКРЫТЬ NETWORK DEBUGGER"
             isAllCaps = false
-            textSize = 11f
+            textSize = 12f
             setTextColor(if (isDebugger) Color.rgb(238, 245, 241) else Color.rgb(8, 18, 14))
             minWidth = 0
             minimumWidth = 0
-            setPadding(dp(activity, 12), 0, dp(activity, 12), 0)
+            setPadding(dp(activity, 16), 0, dp(activity, 16), 0)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 setColor(if (isDebugger) Color.rgb(20, 39, 33) else Color.rgb(151, 231, 92))
-                cornerRadius = dp(activity, 13).toFloat()
+                cornerRadius = dp(activity, 14).toFloat()
                 if (isDebugger) setStroke(dp(activity, 1), Color.rgb(50, 76, 65))
             }
-            elevation = dp(activity, 8).toFloat()
+            elevation = dp(activity, 12).toFloat()
             setOnClickListener {
                 if (isDebugger) {
                     activity.finish()
@@ -84,10 +84,19 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
             }
         }
 
-        val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, dp(activity, 42)).apply {
-            gravity = Gravity.TOP or Gravity.END
-            topMargin = dp(activity, 42)
-            marginEnd = dp(activity, 12)
+        val params = FrameLayout.LayoutParams(
+            if (isDebugger) FrameLayout.LayoutParams.WRAP_CONTENT else FrameLayout.LayoutParams.MATCH_PARENT,
+            dp(activity, 48)
+        ).apply {
+            gravity = if (isDebugger) Gravity.TOP or Gravity.END else Gravity.BOTTOM
+            if (isDebugger) {
+                topMargin = dp(activity, 42)
+                marginEnd = dp(activity, 12)
+            } else {
+                marginStart = dp(activity, 12)
+                marginEnd = dp(activity, 12)
+                bottomMargin = dp(activity, 60)
+            }
         }
         content.addView(button, params)
     }
