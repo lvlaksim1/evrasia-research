@@ -22,7 +22,10 @@ class ResearchArchive {
     val extraArtifacts = ConcurrentHashMap<String, ByteArray>()
     @Volatile var snapshot = JSONObject()
 
-    @Synchronized fun addRecord(record: JSONObject) { records.put(record) }
+    @Synchronized fun addRecord(record: JSONObject) {
+        records.put(record)
+        NetworkDebugStore.add(record)
+    }
 
     @Synchronized fun clear() {
         while (records.length() > 0) records.remove(records.length() - 1)
