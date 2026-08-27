@@ -4,10 +4,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
-import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
-import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -39,7 +37,7 @@ class MainActivity : AppCompatActivity() {
         val controls = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(10,8,10,8); setBackgroundColor(Color.argb(235,13,26,21)) }
         badge = TextView(this).apply { text="0 запросов"; setTextColor(Color.WHITE); setPadding(12,0,12,0) }
         val export = Button(this).apply { text="Экспорт JSON"; setOnClickListener { exportJson() } }
-        val clear = Button(this).apply { text="Очистить"; setOnClickListener { records.clear(); updateBadge() } }
+        val clear = Button(this).apply { text="Очистить"; setOnClickListener { clearRecords(); updateBadge() } }
         controls.addView(badge, LinearLayout.LayoutParams(0,-2,1f)); controls.addView(clear); controls.addView(export)
         root.addView(controls, FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
         setContentView(root)
@@ -67,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     @Synchronized private fun addRecord(o:JSONObject){ records.put(o); runOnUiThread{updateBadge()} }
+    @Synchronized private fun clearRecords(){ while (records.length() > 0) records.remove(records.length() - 1) }
     private fun updateBadge(){ badge.text="${records.length()} запросов" }
 
     private fun exportJson(){
