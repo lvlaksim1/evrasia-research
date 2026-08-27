@@ -1,5 +1,7 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 
+val stableStore = rootProject.file("webresearch.keystore")
+
 android {
     namespace = "ru.evrasia.research"
     compileSdk = 35
@@ -8,15 +10,28 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1"
+        versionName = System.getenv("WEB_RESEARCH_VERSION") ?: "dev"
+    }
+    signingConfigs {
+        if (stableStore.exists()) {
+            create("stable") {
+                storeFile = stableStore
+                storePassword = "webresearch"
+                keyAlias = "webresearch"
+                keyPassword = "webresearch"
+            }
+        }
+    }
+    buildTypes {
+        getByName("debug") {
+            if (stableStore.exists()) signingConfig = signingConfigs.getByName("stable")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    kotlinOptions { jvmTarget = "17" }
 }
 
 dependencies {
