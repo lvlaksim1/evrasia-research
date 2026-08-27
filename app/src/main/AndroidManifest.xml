@@ -1,12 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <application android:theme="@style/AppTheme" android:label="web research" android:usesCleartextTraffic="false">
-        <activity android:name=".WebResearchActivity" android:exported="true">
+    <application
+        android:theme="@style/AppTheme"
+        android:label="web research"
+        android:icon="@drawable/ic_web_research"
+        android:roundIcon="@drawable/ic_web_research"
+        android:usesCleartextTraffic="false">
+        <activity android:name=".WebResearchV10Activity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".WebResearchActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="false" />
     </application>
 </manifest>
