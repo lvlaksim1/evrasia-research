@@ -1,19 +1,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <application
+        android:name=".WebResearchApp"
         android:theme="@style/AppTheme"
         android:label="web research"
         android:icon="@drawable/ic_web_research"
         android:roundIcon="@drawable/ic_web_research"
         android:usesCleartextTraffic="false">
-        <activity android:name=".ResearchHomeActivity" android:exported="true">
+        <activity android:name=".WebResearchV10Activity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity android:name=".WebResearchV10Activity" android:exported="false" />
         <activity android:name=".NetworkDebuggerActivity" android:exported="false" android:label="Network debugger" />
+        <activity android:name=".ResearchHomeActivity" android:exported="false" />
         <activity android:name=".WebResearchActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="false" />
     </application>
