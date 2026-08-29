@@ -26,9 +26,8 @@ object NetworkRequestActions {
     fun writeFullExport(activity: Activity, output: OutputStream): Boolean {
         val browser = activeBrowser(activity) ?: return false
         val archive = archiveOf(browser) ?: return false
-        val page = currentUrl(browser)
         return try {
-            archive.writeZip(output, page)
+            archive.writeZip(output, currentUrl(browser))
             true
         } catch (_: Exception) {
             false
@@ -39,16 +38,14 @@ object NetworkRequestActions {
         val url = event.optString("url", "")
         if (!url.startsWith("http://") && !url.startsWith("https://")) return false
         if (!event.optString("method", "GET").ifBlank { "GET" }.equals("GET", true)) return false
-        val headers = headersOf(event)
-        val targetId = event.optLong("_storeId", -1L)
         execute(
             activity = activity,
             method = "GET",
             url = url,
-            headers = headers,
+            headers = headersOf(event),
             body = "",
             source = "resource-copy",
-            mergeTargetId = targetId,
+            mergeTargetId = event.optLong("_storeId", -1L),
             copyMode = "manual-fallback"
         )
         return true
@@ -112,40 +109,40 @@ object NetworkRequestActions {
 
             var connection: HttpURLConnection? = null
             try {
-                connection = URL(url).openConnection() as HttpURLConnection
-                connection.instanceFollowRedirects = true
-                connection.connectTimeout = 15000
-                connection.readTimeout = 45000
-                connection.requestMethod = method
+                val c = URL(url).openConnection() as HttpURLConnection
+                connection = c
+                c.instanceFollowRedirects = true
+                c.connectTimeout = 15000
+                c.readTimeout = 45000
+                c.requestMethod = method
                 headers.forEach { (name, value) ->
                     if (!name.equals("Host", true) && !name.equals("Content-Length", true)) {
-                        try { connection.setRequestProperty(name, value) } catch (_: Exception) {}
+                        try { c.setRequestProperty(name, value) } catch (_: Exception) {}
                     }
                 }
                 if (headers.keys.none { it.equals("Cookie", true) }) {
-                    CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("Cookie", it) }
+                    CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() }?.let { c.setRequestProperty("Cookie", it) }
                 }
                 if (headers.keys.none { it.equals("User-Agent", true) }) {
-                    browserUserAgent(browser)?.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("User-Agent", it) }
+                    browserUserAgent(browser).takeIf { it.isNotBlank() }?.let { c.setRequestProperty("User-Agent", it) }
                 }
                 if (body.isNotEmpty() && method !in setOf("GET", "HEAD")) {
-                    connection.doOutput = true
-                    connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                    c.doOutput = true
+                    c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
                 }
 
-                val status = connection.responseCode
-                val stream = if (status in 200..399) connection.inputStream else connection.errorStream
+                val status = c.responseCode
+                val stream = if (status in 200..399) c.inputStream else c.errorStream
                 val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
                 val responseHeaders = JSONObject()
-                connection.headerFields.filterKeys { it != null }.forEach { (name, values) -> responseHeaders.put(name, values.joinToString(", ")) }
-                val contentType = connection.contentType.orEmpty()
-                val finalUrl = connection.url.toString()
-                val textual = isTextual(contentType, bytes)
-                val responseBody = if (textual) decodeText(bytes, contentType) else "[binary]"
+                c.headerFields.filterKeys { it != null }.forEach { (name, values) -> responseHeaders.put(name, values.joinToString(", ")) }
+                val contentType = c.contentType.orEmpty()
+                val finalUrl = c.url.toString()
+                val responseBody = if (isTextual(contentType, bytes)) decodeText(bytes, contentType) else "[binary]"
 
                 record.put("duration", System.currentTimeMillis() - started)
                     .put("status", status)
-                    .put("statusText", connection.responseMessage.orEmpty())
+                    .put("statusText", c.responseMessage.orEmpty())
                     .put("responseHeaders", responseHeaders)
                     .put("mimeType", contentType)
                     .put("responseSize", bytes.size)
@@ -200,8 +197,13 @@ object NetworkRequestActions {
     }
 
     private fun decodeText(bytes: ByteArray, contentType: String): String {
-        val charsetName = Regex("charset\\s*=\\s*([^; ]+)", RegexOption.IGNORE_CASE).find(contentType)?.groupValues?.getOrNull(1)?.trim('"', '\'')
-        val charset = try { if (charsetName.isNullOrBlank()) Charsets.UTF_8 else Charset.forName(charsetName) } catch (_: Exception) { Charsets.UTF_8 }
+        val charsetName = Regex("charset\\s*=\\s*([^; ]+)", RegexOption.IGNORE_CASE)
+            .find(contentType)?.groupValues?.getOrNull(1)?.trim('"', '\'')
+        val charset = try {
+            if (charsetName.isNullOrBlank()) Charsets.UTF_8 else Charset.forName(charsetName)
+        } catch (_: Exception) {
+            Charsets.UTF_8
+        }
         if (bytes.size <= MAX_TEXT_BODY) return bytes.toString(charset)
         val prefix = bytes.copyOf(MAX_TEXT_BODY).toString(charset)
         return prefix + "\n\n[truncated in trace: ${bytes.size - MAX_TEXT_BODY} bytes remain; full bytes are kept in ZIP]"
@@ -214,24 +216,32 @@ object NetworkRequestActions {
             field.isAccessible = true
             val ref = field.get(app) as? WeakReference<*>
             ref?.get() as? WebResearchV10Activity
-        } catch (_: Exception) { null }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun archiveOf(browser: WebResearchV10Activity): ResearchArchive? = try {
         val field = WebResearchV10Activity::class.java.getDeclaredField("archive")
         field.isAccessible = true
         field.get(browser) as? ResearchArchive
-    } catch (_: Exception) { null }
+    } catch (_: Exception) {
+        null
+    }
 
     private fun currentUrl(browser: WebResearchV10Activity): String = try {
         val field = WebResearchV10Activity::class.java.getDeclaredField("web")
         field.isAccessible = true
         (field.get(browser) as? WebView)?.url.orEmpty()
-    } catch (_: Exception) { "" }
+    } catch (_: Exception) {
+        ""
+    }
 
     private fun browserUserAgent(browser: WebResearchV10Activity?): String = if (browser == null) "" else try {
         val field = WebResearchV10Activity::class.java.getDeclaredField("userAgent")
         field.isAccessible = true
         field.get(browser)?.toString().orEmpty()
-    } catch (_: Exception) { "" }
+    } catch (_: Exception) {
+        ""
+    }
 }
