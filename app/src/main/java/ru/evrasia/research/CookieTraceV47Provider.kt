@@ -110,17 +110,9 @@ class CookieTraceV47Provider : ContentProvider(), Application.ActivityLifecycleC
         archive.extraArtifacts["cookie-trace.json"] = exportJson(page).toString(2).toByteArray(Charsets.UTF_8)
     }
 
-    private fun webOf(activity: WebResearchV10Activity): WebView? = try {
-        val f = WebResearchV10Activity::class.java.getDeclaredField("web")
-        f.isAccessible = true
-        f.get(activity) as? WebView
-    } catch (_: Exception) { null }
+    private fun webOf(activity: WebResearchV10Activity): WebView? = activity.researchWebView()
 
-    private fun archiveOf(activity: WebResearchV10Activity): ResearchArchive? = try {
-        val f = WebResearchV10Activity::class.java.getDeclaredField("archive")
-        f.isAccessible = true
-        f.get(activity) as? ResearchArchive
-    } catch (_: Exception) { null }
+    private fun archiveOf(activity: WebResearchV10Activity): ResearchArchive? = activity.researchArchive()
 
     private fun injectCookieHooks(web: WebView) {
         val js = """
