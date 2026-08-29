@@ -45,8 +45,6 @@ for name in (
     "isDisplayMergeable",
     "displayMergeKey",
     "timesCompatible",
-    "orderedSourceLabel",
-    "displaySource",
     "mergeDisplayInto",
     "mergeJsonObjects",
     "meaningful",
