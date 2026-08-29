@@ -73,14 +73,11 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private lateinit var domainSpinner: Spinner
     private lateinit var typeSpinner: Spinner
     private lateinit var methodSpinner: Spinner
-    private lateinit var statusSpinner: Spinner
-    private lateinit var sourceSpinner: Spinner
     private lateinit var search: EditText
 
     private val allItems = mutableListOf<JSONObject>()
     private val items = mutableListOf<JSONObject>()
     private val domains = mutableListOf<String>()
-    private val sourceFilters = mutableListOf<String>()
     private val handler = Handler(Looper.getMainLooper())
     private val listTimeFormat = SimpleDateFormat("HH:mm:ss.SSS",Locale.US)
     private var lastRevision = -1L
@@ -93,9 +90,9 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private val displayMergeSources = setOf("webview","resource-copy","resource-timing","fetch","fetch-meta","xhr","xhr-meta")
     private val displaySourceOrder = listOf("webview","fetch","fetch-meta","xhr","xhr-meta","resource-timing","resource-copy")
     private val displayMergeWindowMs = 1200L
+    private val strongDuplicateWindowMs = 90L
     private val typeFilters = listOf("ALL","JSON","HTML","JS","CSS","IMG","PDF","TEXT","BIN","OTHER")
     private val methodFilters = listOf("ALL","GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD","WS","SSE","OTHER")
-    private val statusFilters = listOf("ALL","2xx","3xx","4xx","5xx","ERR","NO STATUS")
 
     private val refresh = object : Runnable {
         override fun run() {
@@ -143,34 +140,29 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         val filterScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             setBackgroundColor(bg)
+            isFillViewport = true
         }
         val filterRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8),dp(5),dp(8),dp(4))
+            setPadding(dp(8),dp(5),dp(8),dp(5))
         }
-        domainSpinner = Spinner(this)
-        filterRow.addView(domainSpinner, LinearLayout.LayoutParams(dp(140),dp(40)))
 
-        typeSpinner = Spinner(this)
+        domainSpinner = Spinner(this,Spinner.MODE_DROPDOWN)
+        typeSpinner = Spinner(this,Spinner.MODE_DROPDOWN)
+        methodSpinner = Spinner(this,Spinner.MODE_DROPDOWN)
+
         typeSpinner.adapter = spinnerAdapter(typeFilters)
         attachFilterListener(typeSpinner)
-        filterRow.addView(typeSpinner, LinearLayout.LayoutParams(dp(82),dp(40)).apply{marginStart=dp(5)})
-
-        methodSpinner = Spinner(this)
         methodSpinner.adapter = spinnerAdapter(methodFilters)
         attachFilterListener(methodSpinner)
-        filterRow.addView(methodSpinner, LinearLayout.LayoutParams(dp(92),dp(40)).apply{marginStart=dp(5)})
 
-        statusSpinner = Spinner(this)
-        statusSpinner.adapter = spinnerAdapter(statusFilters)
-        attachFilterListener(statusSpinner)
-        filterRow.addView(statusSpinner, LinearLayout.LayoutParams(dp(96),dp(40)).apply{marginStart=dp(5)})
+        filterRow.addView(filterCard("ДОМЕН",domainSpinner,dp(178)))
+        filterRow.addView(filterCard("ТИП ОТВЕТА",typeSpinner,dp(104)),LinearLayout.LayoutParams(dp(104),dp(56)).apply{marginStart=dp(6)})
+        filterRow.addView(filterCard("МЕТОД",methodSpinner,dp(108)),LinearLayout.LayoutParams(dp(108),dp(56)).apply{marginStart=dp(6)})
 
-        sourceSpinner = Spinner(this)
-        filterRow.addView(sourceSpinner, LinearLayout.LayoutParams(dp(150),dp(40)).apply{marginStart=dp(5)})
         filterScroll.addView(filterRow)
-        root.addView(filterScroll,LinearLayout.LayoutParams(-1,dp(49)))
+        root.addView(filterScroll,LinearLayout.LayoutParams(-1,dp(66)))
 
         val searchRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -270,7 +262,6 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
     private fun rebuildDynamicFilters(){
         val selectedDomain=if(::domainSpinner.isInitialized)selected(domainSpinner,"Все домены") else "Все домены"
-        val selectedSource=if(::sourceSpinner.isInitialized)selected(sourceSpinner,"ALL") else "ALL"
 
         domains.clear()
         domains.add("Все домены")
@@ -278,31 +269,53 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         domainSpinner.adapter=spinnerAdapter(domains)
         domainSpinner.setSelection(domains.indexOf(selectedDomain).takeIf{it>=0}?:0)
         attachFilterListener(domainSpinner)
+    }
 
-        sourceFilters.clear()
-        sourceFilters.add("ALL")
-        allItems.flatMap{eventSources(it).toList()}.filter{it.isNotBlank()}.distinct().sorted().forEach{sourceFilters.add(it)}
-        sourceSpinner.adapter=spinnerAdapter(sourceFilters)
-        sourceSpinner.setSelection(sourceFilters.indexOf(selectedSource).takeIf{it>=0}?:0)
-        attachFilterListener(sourceSpinner)
+    private fun filterCard(label:String,spinner:Spinner,width:Int)=LinearLayout(this).apply{
+        orientation=LinearLayout.VERTICAL
+        gravity=Gravity.CENTER_VERTICAL
+        background=rounded(panel,12f,line)
+        setPadding(dp(9),dp(4),dp(7),dp(4))
+        addView(TextView(this@NetworkDebuggerActivity).apply{
+            text=label
+            setTextColor(muted)
+            textSize=7.5f
+            typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD)
+            letterSpacing=.08f
+            setPadding(dp(2),0,dp(2),0)
+        },LinearLayout.LayoutParams(-1,dp(14)))
+        spinner.background=rounded(panel2,8f,Color.TRANSPARENT)
+        spinner.popupBackgroundDrawable=rounded(panel,12f,line)
+        spinner.dropDownVerticalOffset=dp(4)
+        addView(spinner,LinearLayout.LayoutParams(-1,dp(32)))
+        layoutParams=LinearLayout.LayoutParams(width,dp(56))
     }
 
     private fun spinnerAdapter(values:List<String>)=object:ArrayAdapter<String>(this,android.R.layout.simple_spinner_item,values){
-        private fun viewAt(position:Int)=TextView(this@NetworkDebuggerActivity).apply{
+        private fun selectedView(position:Int)=TextView(this@NetworkDebuggerActivity).apply{
             text=getItem(position)
             setTextColor(textColor)
-            textSize=10f
+            textSize=11f
+            typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD)
+            gravity=Gravity.CENTER_VERTICAL
+            maxLines=1
+            setPadding(dp(8),0,dp(18),0)
+            background=Color.TRANSPARENT.toDrawableCompat()
+        }
+        private fun dropView(position:Int)=TextView(this@NetworkDebuggerActivity).apply{
+            text=getItem(position)
+            setTextColor(if(position==0)muted else textColor)
+            textSize=11f
             typeface=Typeface.MONOSPACE
             gravity=Gravity.CENTER_VERTICAL
-            setPadding(dp(9),0,dp(9),0)
-            background=rounded(panel2,9f,line)
+            setPadding(dp(14),dp(11),dp(14),dp(11))
+            background=rounded(panel2,8f,line)
         }
-        override fun getView(position:Int,convertView:View?,parent:ViewGroup)=viewAt(position)
-        override fun getDropDownView(position:Int,convertView:View?,parent:ViewGroup)=viewAt(position).apply{
-            setPadding(dp(12),dp(10),dp(12),dp(10))
-            background=rounded(bg,0f)
-        }
+        override fun getView(position:Int,convertView:View?,parent:ViewGroup)=selectedView(position)
+        override fun getDropDownView(position:Int,convertView:View?,parent:ViewGroup)=dropView(position)
     }
+
+    private fun Int.toDrawableCompat()=android.graphics.drawable.ColorDrawable(this)
 
     private fun attachFilterListener(spinner:Spinner){
         spinner.onItemSelectedListener=object:android.widget.AdapterView.OnItemSelectedListener{
@@ -315,8 +328,6 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         val domain=if(::domainSpinner.isInitialized)selected(domainSpinner,"Все домены") else "Все домены"
         val type=if(::typeSpinner.isInitialized)selected(typeSpinner,"ALL") else "ALL"
         val method=if(::methodSpinner.isInitialized)selected(methodSpinner,"ALL") else "ALL"
-        val status=if(::statusSpinner.isInitialized)selected(statusSpinner,"ALL") else "ALL"
-        val source=if(::sourceSpinner.isInitialized)selected(sourceSpinner,"ALL") else "ALL"
         val q=if(::search.isInitialized)search.text.toString().trim() else ""
 
         val displayItems=if(mergeMode)mergeForDisplay(allItems) else allItems.map{JSONObject(it.toString())}
@@ -329,11 +340,9 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             val typeOk=type=="ALL"||(action&&type=="OTHER")||(!action&&responseKind(event)==type)
             val methodValue=methodOf(event)
             val methodOk=method=="ALL"||methodValue==method||(method=="OTHER"&&methodValue !in methodFilters)
-            val statusOk=statusMatches(event,status)
-            val sourceOk=source=="ALL"||source in eventSources(event)
             val apiOk=!apiOnly||isApiRelevant(event)
             val searchOk=q.isBlank()||event.toString().contains(q,true)
-            domainOk&&typeOk&&methodOk&&statusOk&&sourceOk&&apiOk&&searchOk
+            domainOk&&typeOk&&methodOk&&apiOk&&searchOk
         }
 
         if(::adapter.isInitialized)adapter.notifyDataSetChanged()
@@ -342,22 +351,8 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             val actions=displayItems.count{isActionEvent(it)}
             val errors=displayItems.count{it.has("error")||it.optInt("status",0)>=400}
             val prefix=if(mergeMode)"${allItems.size} событий → ${displayItems.size} строк" else "${allItems.size} событий"
-            val filtered=domain!="Все домены"||type!="ALL"||method!="ALL"||status!="ALL"||source!="ALL"||apiOnly||q.isNotBlank()
+            val filtered=domain!="Все домены"||type!="ALL"||method!="ALL"||apiOnly||q.isNotBlank()
             counter.text="$prefix · $requests запросов · $actions действий · $errors ошибок${if(filtered)" · показано ${items.size}" else ""}"
-        }
-    }
-
-    private fun statusMatches(event:JSONObject,filter:String):Boolean{
-        if(filter=="ALL")return true
-        if(filter=="ERR")return event.has("error")||event.optInt("status",0)>=400
-        if(filter=="NO STATUS")return !event.has("status")||event.optInt("status",0)<=0
-        val status=event.optInt("status",0)
-        return when(filter){
-            "2xx"->status in 200..299
-            "3xx"->status in 300..399
-            "4xx"->status in 400..499
-            "5xx"->status in 500..599
-            else->true
         }
     }
 
@@ -392,7 +387,85 @@ class NetworkDebuggerActivity : AppCompatActivity() {
                 candidates.add(event)
             }
         }
+        return collapseStrongDuplicates(out)
+    }
+
+    private fun collapseStrongDuplicates(source:List<JSONObject>):List<JSONObject>{
+        val out=mutableListOf<JSONObject>()
+        val recent=HashMap<String,MutableList<JSONObject>>()
+        source.forEach{event->
+            if(!isDisplayMergeable(event)){
+                out.add(event)
+                return@forEach
+            }
+            val key=displayMergeKey(event)
+            val time=event.optLong("time",0L)
+            val candidates=recent.getOrPut(key){mutableListOf()}
+            if(time>0L)candidates.removeAll{candidate->
+                val ct=candidate.optLong("time",0L)
+                ct>0L&&abs(ct-time)>strongDuplicateWindowMs
+            }
+            val target=candidates.minByOrNull{candidate->
+                val ct=candidate.optLong("time",0L)
+                if(time>0L&&ct>0L)abs(ct-time) else Long.MAX_VALUE
+            }
+            if(target!=null&&strongDuplicateCandidate(target,event)){
+                val delta=abs(target.optLong("time",0L)-time)
+                mergeDisplayInto(target,event,delta)
+                target.put("_deduplicated",true)
+            }else{
+                out.add(event)
+                candidates.add(event)
+            }
+        }
         return out
+    }
+
+    private fun strongDuplicateCandidate(a:JSONObject,b:JSONObject):Boolean{
+        val ta=a.optLong("time",0L)
+        val tb=b.optLong("time",0L)
+        if(ta<=0L||tb<=0L||abs(ta-tb)>strongDuplicateWindowMs)return false
+        val sa=a.optInt("status",0)
+        val sb=b.optInt("status",0)
+        if(sa>0&&sb>0&&sa!=sb)return false
+
+        val sourcesA=eventSources(a)
+        val sourcesB=eventSources(b)
+        if(sourcesA==sourcesB)return false
+        if(sourcesA.intersect(sourcesB).isEmpty())return false
+
+        var evidence=0
+        val sizeA=bestResponseSize(a)
+        val sizeB=bestResponseSize(b)
+        if(sizeA>0L&&sizeB>0L){if(sizeA!=sizeB)return false else evidence++}
+
+        val durationA=a.optDouble("duration",-1.0)
+        val durationB=b.optDouble("duration",-1.0)
+        if(durationA>=0.0&&durationB>=0.0){
+            if(abs(durationA-durationB)>3.0)return false
+            evidence++
+        }
+
+        val bodyA=a.optString("responseBody",a.optString("data","")).takeIf{it.isNotBlank()&&it!="[binary]"&&it!="[non-text response]"}
+        val bodyB=b.optString("responseBody",b.optString("data","")).takeIf{it.isNotBlank()&&it!="[binary]"&&it!="[non-text response]"}
+        if(bodyA!=null&&bodyB!=null){if(bodyA!=bodyB)return false else evidence+=2}
+
+        val kindA=responseKind(a)
+        val kindB=responseKind(b)
+        if(kindA!="OTHER"&&kindB!="OTHER"){if(kindA!=kindB)return false else evidence++}
+
+        val subset=sourcesA.containsAll(sourcesB)||sourcesB.containsAll(sourcesA)
+        return evidence>=2||(subset&&evidence>=1&&abs(ta-tb)<=25L)
+    }
+
+    private fun bestResponseSize(event:JSONObject):Long{
+        listOf("responseSize","decodedBodySize","encodedBodySize","transferSize").forEach{key->
+            if(event.has(key)){
+                val value=event.optLong(key,-1L)
+                if(value>0L)return value
+            }
+        }
+        return -1L
     }
 
     private fun isDisplayMergeable(event:JSONObject):Boolean{
@@ -695,9 +768,8 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             orientation=LinearLayout.VERTICAL
             setPadding(0,0,0,dp(10))
         }
-        addCollapsible(content,"REQUEST",true,codeText(highlightPlain(buildRequestSummary(event),query)))
-        addCollapsible(content,"RESPONSE",true,codeText(highlightPlain(buildResponseSummary(event),query)))
-        addCollapsible(content,"HEADERS",false,codeText(highlightPlain(buildHeadersText(event),query)))
+        addCollapsible(content,"REQUEST",true,codeText(highlightPlain(buildRequestSectionText(event),query)))
+        addCollapsible(content,"RESPONSE",true,codeText(highlightPlain(buildResponseSectionText(event),query)))
 
         val bodyPanel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
         val requestBody=event.optString("requestBody","")
@@ -847,6 +919,20 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         if(event.has("error"))append("\nERROR\n").append(event.optString("error")).append('\n')
     }.trimEnd()
 
+    private fun buildRequestSectionText(event:JSONObject)=buildString{
+        append(buildRequestSummary(event))
+        append("\n\nHEADERS\n")
+        val headers=event.optJSONObject("requestHeaders")?:event.optJSONObject("headers")
+        append(prettyJson(headers?:JSONObject()))
+    }
+
+    private fun buildResponseSectionText(event:JSONObject)=buildString{
+        append(buildResponseSummary(event))
+        append("\n\nHEADERS\n")
+        val headers=event.optJSONObject("responseHeaders")
+        append(if(headers!=null)prettyJson(headers) else event.optString("responseHeadersRaw","—"))
+    }
+
     private fun buildHeadersText(event:JSONObject)=buildString{
         val requestHeaders=event.optJSONObject("requestHeaders")?:event.optJSONObject("headers")
         append("REQUEST HEADERS\n").append(prettyJson(requestHeaders?:JSONObject()))
@@ -879,6 +965,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             append("Count: ").append(sources.size).append('\n')
             append("Merge confidence: ").append(if(event.optString("_mergeConfidence")=="MEDIUM")"approximate (~)" else "high (✓)").append('\n')
         }
+        if(event.optBoolean("_deduplicated",false))append("Duplicate groups collapsed: yes\n")
     }.trimEnd()
 
     private fun buildRequestText(event:JSONObject,cookies:String)=buildString{
