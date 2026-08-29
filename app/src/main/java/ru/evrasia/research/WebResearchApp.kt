@@ -24,7 +24,7 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
     private var advancedTick=0
     private val mirroredScripts=mutableSetOf<String>()
     private val ink=Color.rgb(3,10,15); private val surface=Color.rgb(7,18,25); private val surface2=Color.rgb(10,25,34); private val line=Color.rgb(21,57,69); private val cyan=Color.rgb(0,226,239); private val white=Color.rgb(232,244,248); private val muted=Color.rgb(113,139,151)
-    private val ticker=object:Runnable{override fun run(){syncNetworkStore();advancedTick++;browserRef.get()?.let{if(advancedTick%2==0)it.ensureInstrumentation();if(advancedTick%8==0)installAdvancedCapture(it)};debuggerRef.get()?.let{styleDebuggerRows(it)};handler.postDelayed(this,250)}}
+    private val ticker=object:Runnable{override fun run(){syncNetworkStore();advancedTick++;browserRef.get()?.let{if(advancedTick%5==0){it.ensureInstrumentation();installAdvancedCapture(it)}};handler.postDelayed(this,1000)}}
     override fun onCreate(){super.onCreate();registerActivityLifecycleCallbacks(this);handler.post(ticker)}
 
     fun syncNetworkStore(){

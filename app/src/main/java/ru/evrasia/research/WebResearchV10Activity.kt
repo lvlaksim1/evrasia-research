@@ -43,6 +43,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class WebResearchV10Activity : AppCompatActivity() {
     private lateinit var web: WebView
@@ -60,6 +62,8 @@ class WebResearchV10Activity : AppCompatActivity() {
     private val artifactChunks = ConcurrentHashMap<String, MutableMap<Int, String>>()
     private val bookmarks = mutableListOf<String>()
     private lateinit var userAgent: String
+    private val captureExecutor = Executors.newFixedThreadPool(2)
+    private val badgeUpdatePending = AtomicBoolean(false)
     private val statsHandler = Handler(Looper.getMainLooper())
     private val statsTicker = object : Runnable {
         override fun run() {
@@ -250,7 +254,7 @@ class WebResearchV10Activity : AppCompatActivity() {
                 super.onPageFinished(view, url)
                 address.setText(url)
                 addRecord(JSONObject().put("source", "navigation").put("time", System.currentTimeMillis()).put("url", url).put("page", url).put("method", "GET"))
-                ensureInstrumentation(); capturePageSnapshot(); updateStats()
+                ensureInstrumentation(); captureLightPageSnapshot(); updateStats()
             }
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): android.webkit.WebResourceResponse? {
                 request?.let {
@@ -388,7 +392,7 @@ class WebResearchV10Activity : AppCompatActivity() {
 
     private fun captureResource(url: String, headers: Map<String, String>, copyMode: String) {
         if (archive.resources.containsKey(url) || !downloadingResources.add(url)) return
-        Thread {
+        captureExecutor.execute {
             try {
                 val c = openConnection(url, headers); val started = System.currentTimeMillis(); val status = c.responseCode
                 val bytes = (if (status in 200..399) c.inputStream else c.errorStream)?.use { it.readBytes() } ?: ByteArray(0)
@@ -402,21 +406,21 @@ class WebResearchV10Activity : AppCompatActivity() {
             } catch (e: Exception) {
                 archive.resourceMeta[url] = JSONObject().put("error", e.toString()).put("copyMode", copyMode)
                 addRecord(JSONObject().put("source", "resource-copy").put("copyMode", copyMode).put("time", System.currentTimeMillis()).put("method", "GET").put("url", url).put("error", e.toString()))
-            } finally { downloadingResources.remove(url); runOnUiThread { updateBadge() } }
-        }.start()
+            } finally { downloadingResources.remove(url); scheduleBadgeUpdate() }
+        }
     }
 
     private fun captureExternalScript(url: String, headers: Map<String, String>) {
         if (url.startsWith("blob:") || url.startsWith("data:") || archive.scripts.containsKey(url) || !downloadingScripts.add(url)) return
-        Thread {
+        captureExecutor.execute {
             try {
                 val c = openConnection(url, headers); val status = c.responseCode
                 val bytes = (if (status in 200..399) c.inputStream else c.errorStream)?.use { it.readBytes() }
                 if (bytes != null) archive.scripts[url] = bytes else archive.scriptErrors[url] = "HTTP $status: empty body"
                 c.disconnect()
             } catch (e: Exception) { archive.scriptErrors[url] = e.toString() }
-            finally { downloadingScripts.remove(url); runOnUiThread { updateBadge() } }
-        }.start()
+            finally { downloadingScripts.remove(url); scheduleBadgeUpdate() }
+        }
     }
 
     fun ensureInstrumentation() {
@@ -481,11 +485,30 @@ class WebResearchV10Activity : AppCompatActivity() {
 
             if(window.WebSocket){const W=window.WebSocket;if(!W.__wrUnified){const Wrapped=class extends W{constructor(u,p){super(u,p);this.__u=String(u);send({source:'websocket-open',time:Date.now(),url:this.__u});this.addEventListener('message',e=>send({source:'websocket-receive',time:Date.now(),url:this.__u,data:typeof e.data==='string'?e.data:'[binary]'}))}send(d){send({source:'websocket-send',time:Date.now(),url:this.__u,data:typeof d==='string'?d:'[binary]'});return super.send(d)}};Wrapped.__wrUnified=true;window.WebSocket=Wrapped}}
             if(window.EventSource){const E=window.EventSource;if(!E.__wrUnified){const Wrapped=class extends E{constructor(u,o){super(u,o);this.__u=String(u);send({source:'sse-open',time:Date.now(),url:this.__u});this.addEventListener('message',e=>send({source:'sse-message',time:Date.now(),url:this.__u,data:e.data,lastEventId:e.lastEventId||''}))}};Wrapped.__wrUnified=true;window.EventSource=Wrapped}}
-            const scan=()=>Array.from(document.scripts).forEach((s,i)=>{if(s.src)EvrasiaResearch.externalScript(String(s.src));else if(s.textContent)chunk(location.href+'#inline-'+i,s.textContent,true)}); scan();
-            new MutationObserver(ms=>{let data=ms.slice(0,100).map(m=>({type:m.type,target:target(m.target),added:m.addedNodes?.length||0,removed:m.removedNodes?.length||0,attribute:m.attributeName||''}));send({source:'dom-mutation',time:Date.now(),page:location.href,mutations:data});scan()}).observe(document.documentElement,{subtree:true,childList:true,attributes:true});
+            const seenScripts=new WeakSet();let dynamicInline=0;
+            const archiveScript=(s,key)=>{try{if(!s||seenScripts.has(s))return;seenScripts.add(s);if(s.src)EvrasiaResearch.externalScript(String(s.src));else if(s.textContent)chunk(key||location.href+'#inline-dynamic-'+(++dynamicInline),s.textContent,true)}catch(e){}};
+            Array.from(document.scripts).forEach((s,i)=>archiveScript(s,location.href+'#inline-'+i));
+            let mutationAdded=0,mutationRemoved=0,mutationAttributes=0,mutationTimer=0;
+            const flushMutations=()=>{mutationTimer=0;if(!(mutationAdded||mutationRemoved||mutationAttributes))return;send({source:'dom-mutation',time:Date.now(),page:location.href,mutations:[{type:'batch',added:mutationAdded,removed:mutationRemoved,attributes:mutationAttributes}]});mutationAdded=0;mutationRemoved=0;mutationAttributes=0};
+            new MutationObserver(ms=>{for(const m of ms){if(m.type==='attributes'){mutationAttributes++;continue}mutationAdded+=m.addedNodes?.length||0;mutationRemoved+=m.removedNodes?.length||0;for(const n of Array.from(m.addedNodes||[])){if(!n||n.nodeType!==1)continue;if(String(n.tagName||'').toLowerCase()==='script')archiveScript(n,location.href+'#inline-dynamic-'+(++dynamicInline));try{if(n.querySelectorAll)n.querySelectorAll('script').forEach(s=>archiveScript(s,location.href+'#inline-dynamic-'+(++dynamicInline)))}catch(e){}}}if(!mutationTimer)mutationTimer=setTimeout(flushMutations,1000)}).observe(document.documentElement,{subtree:true,childList:true,attributes:true});
             addEventListener('error',e=>send({source:'js-error',time:Date.now(),message:e.message,url:e.filename||location.href,line:e.lineno||0,column:e.colno||0}));
             addEventListener('unhandledrejection',e=>send({source:'promise-rejection',time:Date.now(),message:String(e.reason)}));
             send({source:'hook',time:Date.now(),url:location.href,status:0});
+          })();
+        """.trimIndent()
+        web.evaluateJavascript(js, null)
+    }
+
+    private fun captureLightPageSnapshot() {
+        if (!::web.isInitialized) return
+        val nativeCookies = CookieManager.getInstance().getCookie(web.url ?: "") ?: ""
+        val js = """
+          (function(){
+            function store(s){let o={};try{for(let i=0;i<s.length;i++){let k=s.key(i);o[k]=s.getItem(k)}}catch(e){o.__error=String(e)}return o}
+            const attrs=e=>{let o={};try{for(const a of e.attributes||[])o[a.name]=a.value}catch(x){}return o};
+            const elements=Array.from(document.querySelectorAll('a,button,input,select,textarea,form,[role],[onclick]')).slice(0,2500).map(e=>({tag:e.tagName.toLowerCase(),attrs:attrs(e),text:(e.innerText||e.textContent||'').trim().slice(0,300)}));
+            const resources=performance.getEntriesByType('resource').map(r=>({name:r.name,initiatorType:r.initiatorType,startTime:r.startTime,duration:r.duration,transferSize:r.transferSize,encodedBodySize:r.encodedBodySize,decodedBodySize:r.decodedBodySize}));
+            try{EvrasiaResearch.snapshot(JSON.stringify({time:Date.now(),url:location.href,title:document.title,cookie:document.cookie,nativeCookie:${JSONObject.quote(nativeCookies)},localStorage:store(localStorage),sessionStorage:store(sessionStorage),resources:resources,elements:elements,lightweight:true}))}catch(e){}
           })();
         """.trimIndent()
         web.evaluateJavascript(js, null)
@@ -504,13 +527,22 @@ class WebResearchV10Activity : AppCompatActivity() {
             const attrs=e=>{let o={};try{for(const a of e.attributes||[])o[a.name]=a.value}catch(x){}return o};
             const elements=Array.from(document.querySelectorAll('a,button,input,select,textarea,form,[role],[onclick]')).slice(0,10000).map(e=>({tag:e.tagName.toLowerCase(),attrs:attrs(e),text:(e.innerText||e.textContent||'').trim().slice(0,500)}));
             const resources=performance.getEntriesByType('resource').map(r=>({name:r.name,initiatorType:r.initiatorType,startTime:r.startTime,duration:r.duration,transferSize:r.transferSize,encodedBodySize:r.encodedBodySize,decodedBodySize:r.decodedBodySize}));
-            try{EvrasiaResearch.snapshot(JSON.stringify({time:Date.now(),url:location.href,title:document.title,cookie:document.cookie,nativeCookie:${JSONObject.quote(nativeCookies)},localStorage:store(localStorage),sessionStorage:store(sessionStorage),serviceWorkers:sw,cacheStorage:cacheNames,indexedDB:db,resources:resources,elements:elements,html:document.documentElement.outerHTML}))}catch(e){}
+            try{EvrasiaResearch.snapshot(JSON.stringify({time:Date.now(),url:location.href,title:document.title,cookie:document.cookie,nativeCookie:${JSONObject.quote(nativeCookies)},localStorage:store(localStorage),sessionStorage:store(sessionStorage),serviceWorkers:sw,cacheStorage:cacheNames,indexedDB:db,resources:resources,elements:elements,html:document.documentElement.outerHTML,fullSnapshot:true}))}catch(e){}
           })();
         """.trimIndent()
         web.evaluateJavascript(js, null)
     }
 
-    private fun addRecord(record: JSONObject) { archive.addRecord(record); runOnUiThread { updateBadge() } }
+    private fun addRecord(record: JSONObject) { archive.addRecord(record); scheduleBadgeUpdate() }
+
+    private fun scheduleBadgeUpdate() {
+        if (!badgeUpdatePending.compareAndSet(false, true)) return
+        statsHandler.postDelayed({
+            badgeUpdatePending.set(false)
+            if (::badge.isInitialized && !isFinishing) updateBadge()
+        }, 250)
+    }
+
     private fun updateBadge() { badge.text = "${archive.records.length()} событий · ${archive.scripts.size} JS · ${archive.resources.size} ресурсов" }
 
     private fun exportZip() {
@@ -538,6 +570,7 @@ class WebResearchV10Activity : AppCompatActivity() {
 
     override fun onDestroy() {
         statsHandler.removeCallbacks(statsTicker)
+        captureExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -559,7 +592,7 @@ class WebResearchV10Activity : AppCompatActivity() {
             if (map.size == total) {
                 val out = StringBuilder(); for (i in 0 until total) out.append(map[i] ?: "")
                 if (script) archive.scripts[key] = out.toString().toByteArray(Charsets.UTF_8) else archive.extraArtifacts[key] = out.toString().toByteArray(Charsets.UTF_8)
-                all.remove(key); runOnUiThread { updateBadge() }
+                all.remove(key); scheduleBadgeUpdate()
             }
         } catch (e: Exception) { if (script) archive.scriptErrors[key] = e.toString() }
     }
