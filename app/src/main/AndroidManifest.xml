@@ -24,8 +24,5 @@
             </intent-filter>
         </activity>
         <activity android:name=".NetworkDebuggerActivity" android:exported="false" android:label="Network debugger" />
-        <activity android:name=".ResearchHomeActivity" android:exported="false" />
-        <activity android:name=".WebResearchActivity" android:exported="false" />
-        <activity android:name=".MainActivity" android:exported="false" />
     </application>
 </manifest>
