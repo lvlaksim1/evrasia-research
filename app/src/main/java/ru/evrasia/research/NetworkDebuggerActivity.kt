@@ -251,6 +251,10 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         val responseText=buildResponseText(event,requestCookies)
 
         val content=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setBackgroundColor(bg);setPadding(dp(10),dp(8),dp(10),dp(14))}
+        val decodeButton=compactButton("URL-ДЕКОДИРОВАТЬ") {
+            decodeAllText(content)
+        }
+        content.addView(decodeButton,LinearLayout.LayoutParams(-1,dp(40)).apply{setMargins(0,0,0,dp(4))})
         addSection(content,"REQUEST",highlightPlain(requestText,query))
         addSection(content,"RESPONSE",highlightPlain(responseText,query))
 
@@ -289,6 +293,17 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("Детали запроса").setView(sv).setPositiveButton("Закрыть",null).show()
     }
 
+    private fun decodeAllText(view:View){
+        when(view){
+            is Button -> if(view.text=="URL-ДЕКОДИРОВАТЬ"){
+                view.text="URL-ДЕКОДИРОВАНО"
+                view.isEnabled=false
+            }
+            is TextView -> view.text=decodePercentText(view.text.toString())
+            is ViewGroup -> for(i in 0 until view.childCount)decodeAllText(view.getChildAt(i))
+        }
+    }
+
     private fun buildRequestText(event:JSONObject,cookies:String)=buildString{
         append("Method: ").append(event.optString("method","—")).append('\n')
         append("URL: ").append(event.optString("url","—")).append('\n')
@@ -310,17 +325,17 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     }.trimEnd()
 
     private fun buildResponseText(event:JSONObject,cookies:String)=buildString{
-        if(event.has("status"))append("Status: ").append(event.optInt("status")).append(' ').append(decodePercentText(event.optString("statusText",""))).append('\n')
-        appendDecodedField(this,event,"finalUrl","Final URL")
-        appendDecodedField(this,event,"redirectURL","Redirect URL")
+        if(event.has("status"))append("Status: ").append(event.optInt("status")).append(' ').append(event.optString("statusText","")).append('\n')
+        appendField(this,event,"finalUrl","Final URL")
+        appendField(this,event,"redirectURL","Redirect URL")
         appendField(this,event,"redirected","Redirected")
         appendField(this,event,"redirectCount","Redirect count")
-        appendDecodedField(this,event,"httpVersion","Protocol")
-        appendDecodedField(this,event,"cache","Delivery/cache")
-        appendDecodedField(this,event,"deliveryType","Delivery type")
-        appendDecodedField(this,event,"renderBlockingStatus","Render blocking")
-        appendDecodedField(this,event,"responseType","Response type")
-        appendDecodedField(this,event,"mimeType","MIME type")
+        appendField(this,event,"httpVersion","Protocol")
+        appendField(this,event,"cache","Delivery/cache")
+        appendField(this,event,"deliveryType","Delivery type")
+        appendField(this,event,"renderBlockingStatus","Render blocking")
+        appendField(this,event,"responseType","Response type")
+        appendField(this,event,"mimeType","MIME type")
         if(event.has("duration"))append("Duration: ").append(event.opt("duration")).append(" ms\n")
         listOf("responseSize" to "Response size","transferSize" to "Transferred","encodedBodySize" to "Encoded body","decodedBodySize" to "Decoded body").forEach{(k,n)->if(event.has(k))append(n).append(": ").append(event.optLong(k)).append(" bytes\n")}
         appendField(this,event,"responseStart","Response start")
@@ -328,17 +343,16 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         val timing=event.optJSONObject("timing")
         if(timing!=null){append("\nTIMING\n");timing.keys().forEach{k->append(k).append(": ").append(timing.opt(k)).append(" ms\n")}}
         val headers=event.optJSONObject("responseHeaders")
-        append("\nRESPONSE HEADERS\n").append(if(headers!=null)prettyDecodedJson(headers) else decodePercentText(event.optString("responseHeadersRaw","—"))).append('\n')
-        append("\nCOOKIES FOR URL\n").append(decodePercentText(cookies.ifBlank{"—"})).append('\n')
-        if(event.has("error"))append("\nERROR\n").append(decodePercentText(event.optString("error"))).append('\n')
+        append("\nRESPONSE HEADERS\n").append(if(headers!=null)prettyJson(headers) else event.optString("responseHeadersRaw","—")).append('\n')
+        append("\nCOOKIES FOR URL\n").append(cookies.ifBlank{"—"}).append('\n')
+        if(event.has("error"))append("\nERROR\n").append(event.optString("error")).append('\n')
     }.trimEnd()
 
     private fun appendUrlParts(out:StringBuilder,raw:String){
-        try{val u=URL(raw);out.append("Scheme: ").append(u.protocol).append('\n');out.append("Host: ").append(u.host).append('\n');out.append("Port: ").append(if(u.port>0)u.port else u.defaultPort).append('\n');out.append("Path: ").append(u.path.ifBlank{"/"}).append('\n');if(!u.query.isNullOrBlank()){out.append("\nQUERY PARAMETERS\n");u.query.split('&').forEach{part->val p=part.indexOf('=');val k=if(p>=0)part.substring(0,p) else part;val v=if(p>=0)part.substring(p+1) else "";out.append(urlDecode(k)).append(" = ").append(urlDecode(v)).append('\n')}}}catch(_:Exception){}
+        try{val u=URL(raw);out.append("Scheme: ").append(u.protocol).append('\n');out.append("Host: ").append(u.host).append('\n');out.append("Port: ").append(if(u.port>0)u.port else u.defaultPort).append('\n');out.append("Path: ").append(u.path.ifBlank{"/"}).append('\n');if(!u.query.isNullOrBlank()){out.append("\nQUERY PARAMETERS\n");u.query.split('&').forEach{part->val p=part.indexOf('=');val k=if(p>=0)part.substring(0,p) else part;val v=if(p>=0)part.substring(p+1) else "";out.append(k).append(" = ").append(v).append('\n')}}}catch(_:Exception){}
     }
 
     private fun appendField(out:StringBuilder,event:JSONObject,key:String,label:String){if(event.has(key)){val v=event.opt(key);if(v!=null&&v!=JSONObject.NULL&&v.toString().isNotBlank())out.append(label).append(": ").append(v).append('\n')}}
-    private fun appendDecodedField(out:StringBuilder,event:JSONObject,key:String,label:String){if(event.has(key)){val v=event.opt(key);if(v!=null&&v!=JSONObject.NULL&&v.toString().isNotBlank())out.append(label).append(": ").append(decodePercentText(v.toString())).append('\n')}}
     private fun formatTime(ms:Long)=SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS",Locale.US).format(Date(ms))
     private fun listTime(ms:Long)=SimpleDateFormat("HH:mm:ss.SSS",Locale.US).format(Date(ms))
     private fun urlDecode(s:String)=try{URLDecoder.decode(s,"UTF-8")}catch(_:Exception){s}
@@ -355,15 +369,6 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         return value
     }
 
-    private fun decodeJsonValue(value:Any?):Any?=when(value){
-        is JSONObject->{val out=JSONObject();val keys=value.keys();while(keys.hasNext()){val k=keys.next();out.put(k,decodeJsonValue(value.opt(k)))};out}
-        is JSONArray->{val out=JSONArray();for(i in 0 until value.length())out.put(decodeJsonValue(value.opt(i)));out}
-        is String->decodePercentText(value)
-        else->value
-    }
-
-    private fun prettyDecodedJson(obj:JSONObject)=try{(decodeJsonValue(obj) as JSONObject).toString(2)}catch(_:Exception){decodePercentText(obj.toString())}
-
     private fun prettyBody(raw:String,mime:String):String{
         val t=raw.trim()
         if(t.isBlank())return "—"
@@ -373,29 +378,8 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         return raw
     }
 
-    private fun prettyResponseBody(raw:String,mime:String):String{
-        val t=raw.trim()
-        if(t.isBlank())return "—"
-        try{
-            if(t.startsWith("{"))return (decodeJsonValue(JSONObject(t)) as JSONObject).toString(2)
-            if(t.startsWith("["))return (decodeJsonValue(JSONArray(t)) as JSONArray).toString(2)
-        }catch(_:Exception){}
-        val decoded=decodePercentText(raw)
-        val d=decoded.trim()
-        try{
-            if(d.startsWith("{"))return (decodeJsonValue(JSONObject(d)) as JSONObject).toString(2)
-            if(d.startsWith("["))return (decodeJsonValue(JSONArray(d)) as JSONArray).toString(2)
-        }catch(_:Exception){}
-        if(mime.contains("json",true)){
-            try{return (decodeJsonValue(JSONObject(d)) as JSONObject).toString(2)}catch(_:Exception){}
-            try{return (decodeJsonValue(JSONArray(d)) as JSONArray).toString(2)}catch(_:Exception){}
-        }
-        if(mime.contains("xml",true)||mime.contains("html",true)||d.startsWith("<"))return decoded.replace(Regex(">\\s*<"),">\n<")
-        return decoded
-    }
-
     private fun decorateResponseBody(raw:String,mime:String,query:String):CharSequence{
-        val pretty=prettyResponseBody(raw,mime)
+        val pretty=prettyBody(raw,mime)
         val s=SpannableString(pretty)
         if(mime.contains("json",true)||pretty.trim().startsWith("{")||pretty.trim().startsWith("[")){
             colorRegex(s,Regex("\"(?:\\\\.|[^\"\\\\])*\"(?=\\s*:)",RegexOption.DOT_MATCHES_ALL),cyan)
