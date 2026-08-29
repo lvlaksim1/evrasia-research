@@ -1,0 +1,124 @@
+name: Refactor stage 3 apply
+on:
+  push:
+    branches: [refactor-stage3-v53]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[stage3-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor-stage3-v53
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Apply refactor
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              s = p.read_text()
+              if old not in s:
+                  raise SystemExit(f'Expected block not found in {path}: {old[:80]!r}')
+              p.write_text(s.replace(old, new, 1))
+
+          activity = 'app/src/main/java/ru/evrasia/research/WebResearchV10Activity.kt'
+          replace_once(
+              activity,
+              'class WebResearchV10Activity : AppCompatActivity() {\n    private lateinit var web: WebView',
+              'class WebResearchV10Activity : AppCompatActivity() {\n    internal fun researchWebView(): WebView? = if (::web.isInitialized) web else null\n    internal fun researchArchive(): ResearchArchive = archive\n\n    private lateinit var web: WebView'
+          )
+
+          app = 'app/src/main/java/ru/evrasia/research/WebResearchApp.kt'
+          replace_once(
+              app,
+              '            val f=WebResearchV10Activity::class.java.getDeclaredField("archive");f.isAccessible=true\n            val a=f.get(browser) as? ResearchArchive?:return',
+              '            val a=browser.researchArchive()'
+          )
+          replace_once(
+              app,
+              '            val f=WebResearchV10Activity::class.java.getDeclaredField("web");f.isAccessible=true\n            val w=f.get(browser) as? WebView\n            val page=w?.url.orEmpty()',
+              '            val w=browser.researchWebView()\n            val page=w?.url.orEmpty()'
+          )
+          replace_once(
+              app,
+              '            val f=WebResearchV10Activity::class.java.getDeclaredField("web");f.isAccessible=true\n            val w=f.get(a) as? WebView?:return',
+              '            val w=a.researchWebView()?:return'
+          )
+          replace_once(app, 'import android.webkit.WebView\n', '')
+
+          for provider in [
+              'app/src/main/java/ru/evrasia/research/CookieTraceV47Provider.kt',
+              'app/src/main/java/ru/evrasia/research/CookieTraceV48UiProvider.kt'
+          ]:
+              p = Path(provider)
+              s = p.read_text()
+              start = s.index('    private fun webOf(activity: WebResearchV10Activity): WebView? = try {')
+              end_marker = '    } catch (_: Exception) { null }\n'
+              first_end = s.index(end_marker, start) + len(end_marker)
+              archive_start = s.index('    private fun archiveOf(activity: WebResearchV10Activity): ResearchArchive? = try {', first_end)
+              archive_end = s.index(end_marker, archive_start) + len(end_marker)
+              replacement = (
+                  '    private fun webOf(activity: WebResearchV10Activity): WebView? = activity.researchWebView()\n\n'
+                  '    private fun archiveOf(activity: WebResearchV10Activity): ResearchArchive? = activity.researchArchive()\n'
+              )
+              p.write_text(s[:start] + replacement + s[archive_end:])
+
+          debugger = 'app/src/main/java/ru/evrasia/research/NetworkDebuggerActivity.kt'
+          replace_once(
+              debugger,
+              '            val line="${if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"}  $direction${if(data.isNotBlank())"\\n$data" else ""}"\n            copyText.append(line).append("\\n\\n")\n            root.addView(TextView(this).apply{\n                text=line;setTextColor(if(direction=="SEND")amber else if(direction=="RECEIVE")accent else muted);textSize=10.5f;typeface=Typeface.MONOSPACE;setTextIsSelectable(true);setPadding(dp(9),dp(8),dp(9),dp(8));background=rounded(panel2,9f,line)',
+              '            val displayLine="${if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"}  $direction${if(data.isNotBlank())"\\n$data" else ""}"\n            copyText.append(displayLine).append("\\n\\n")\n            root.addView(TextView(this).apply{\n                text=displayLine;setTextColor(if(direction=="SEND")amber else if(direction=="RECEIVE")accent else muted);textSize=10.5f;typeface=Typeface.MONOSPACE;setTextIsSelectable(true);setPadding(dp(9),dp(8),dp(9),dp(8));background=rounded(panel2,9f,line)'
+          )
+          replace_once(
+              debugger,
+              '        dialog=AlertDialog.Builder(this).setView(root).create()\n        dialog.setOnShowListener{\n            val dm=resources.displayMetrics\n            dialog.window?.setLayout((dm.widthPixels*0.97).toInt(),(dm.heightPixels*0.92).toInt())\n            dialog.window?.setBackgroundDrawable(rounded(bg,18f,line))\n        }\n        dialog.show()',
+              '        dialog=AlertDialog.Builder(this).setView(root).create()\n        val dm=resources.displayMetrics\n        dialog.window?.apply{\n            setBackgroundDrawable(rounded(bg,18f,line))\n            attributes=attributes.apply{\n                width=(dm.widthPixels*0.97).toInt()\n                height=(dm.heightPixels*0.92).toInt()\n            }\n        }\n        dialog.show()'
+          )
+
+          workflow = '.github/workflows/android-apk.yml'
+          p = Path(workflow)
+          s = p.read_text()
+          marker = '      - name: Prepare request detail geometry\n'
+          start = s.index(marker)
+          next_step = s.index('      - name: Build APK\n', start)
+          p.write_text(s[:start] + s[next_step:])
+
+          compat = Path('app/src/main/java/ru/evrasia/research/NetworkDebuggerCompat.kt')
+          if compat.exists():
+              compat.unlink()
+          PY
+      - name: Verify no reflection coupling remains
+        shell: bash
+        run: |
+          if grep -R "getDeclaredField(\"web\"\|getDeclaredField(\"archive\"" -n app/src/main/java/ru/evrasia/research; then
+            echo "Reflection coupling still present"
+            exit 1
+          fi
+          if grep -q "Prepare request detail geometry" .github/workflows/android-apk.yml; then
+            echo "Build-time source patch still present"
+            exit 1
+          fi
+      - name: Build APK
+        env:
+          WEB_RESEARCH_VERSION: v53-refactor-check
+        run: gradle :app:assembleDebug
+      - name: Commit validated refactor
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/ru/evrasia/research .github/workflows/android-apk.yml
+          git commit -m "refactor: remove reflection and build-time source patches [stage3-applied]"
+          git push origin HEAD:refactor-stage3-v53
