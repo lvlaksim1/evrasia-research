@@ -36,6 +36,7 @@ import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -48,6 +49,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class WebResearchV10Activity : AppCompatActivity() {
     private lateinit var web: WebView
+    private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var address: EditText
     private lateinit var badge: TextView
     private lateinit var stats: TextView
@@ -152,7 +154,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         loadBookmarks()
 
         statsHeader = Button(this).apply {
-            text = "Статистика  ▾"
+            text = "Куки  ▾"
             setTextColor(text)
             textSize = 14f
             isAllCaps = false
@@ -187,7 +189,17 @@ class WebResearchV10Activity : AppCompatActivity() {
         root.addView(statsPanel, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(12), 0, dp(12), dp(8)) })
 
         web = WebView(this).apply { setBackgroundColor(Color.WHITE) }
-        root.addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
+        swipeRefresh = SwipeRefreshLayout(this).apply {
+            setColorSchemeColors(accent)
+            setProgressBackgroundColorSchemeColor(panel2)
+            setOnChildScrollUpCallback { _, _ -> web.canScrollVertically(-1) }
+            setOnRefreshListener {
+                web.reload()
+                statsHandler.postDelayed({ if (::swipeRefresh.isInitialized) swipeRefresh.isRefreshing = false }, 15000)
+            }
+            addView(web, android.view.ViewGroup.LayoutParams(-1, -1))
+        }
+        root.addView(swipeRefresh, LinearLayout.LayoutParams(-1, 0, 1f))
 
         val bottomScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; setBackgroundColor(panel) }
         val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(10), dp(6), dp(10), dp(6)) }
@@ -252,6 +264,7 @@ class WebResearchV10Activity : AppCompatActivity() {
             }
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
+                if (::swipeRefresh.isInitialized) swipeRefresh.isRefreshing = false
                 address.setText(url)
                 addRecord(JSONObject().put("source", "navigation").put("time", System.currentTimeMillis()).put("url", url).put("page", url).put("method", "GET"))
                 ensureInstrumentation(); captureLightPageSnapshot(); updateStats()
@@ -283,7 +296,7 @@ class WebResearchV10Activity : AppCompatActivity() {
     private fun toggleStats() {
         val show = statsPanel.visibility != View.VISIBLE
         statsPanel.visibility = if (show) View.VISIBLE else View.GONE
-        statsHeader.text = if (show) "Статистика  ▴" else "Статистика  ▾"
+        statsHeader.text = if (show) "Куки  ▴" else "Куки  ▾"
         statsHandler.removeCallbacks(statsTicker)
         if (show) { updateStats(); statsHandler.post(statsTicker) }
     }
