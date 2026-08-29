@@ -7,18 +7,23 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
 object NetworkDebugStore {
+    data class Delta(val revision: Long, val reset: Boolean, val events: List<JSONObject>)
+
     @Volatile var recording: Boolean = true
     private val events = mutableListOf<JSONObject>()
     private val revision = AtomicLong(0)
+    private var nextStoreId = 1L
+    private var resetRevision = 0L
+
     private const val MAX_EVENTS = 10000
     private const val MATCH_WINDOW_MS = 5000L
-    private const val MATCH_LOOKBACK = 64
+    private const val MATCH_LOOKBACK = 96
 
     private val networkSources = setOf(
         "webview", "fetch", "xhr", "resource-copy", "resource-timing", "fetch-meta", "xhr-meta",
         "navigation", "navigation-timing", "new-window", "user-action", "history",
         "websocket-open", "websocket-state", "websocket-send", "websocket-receive",
-        "sse-open", "sse-state", "sse-message", "beacon", "source-map", "script-archive"
+        "sse-open", "sse-state", "sse-message", "beacon", "source-map", "script-archive", "replay"
     )
 
     private val mergeableSources = setOf(
@@ -33,17 +38,38 @@ object NetworkDebugStore {
         val copy = JSONObject(record.toString())
         if (isMirroredReplay(copy, source)) return
 
+        val explicitTarget = copy.optLong("_mergeTargetId", -1L)
+        if (explicitTarget > 0L) {
+            val target = events.firstOrNull { it.optLong("_storeId", -1L) == explicitTarget }
+            if (target != null) {
+                copy.remove("_mergeTargetId")
+                mergeInto(target, copy, source)
+                touch(target)
+                return
+            }
+        }
+
         val target = findMergeTarget(copy, source)
         if (target != null) {
             mergeInto(target, copy, source)
-            revision.incrementAndGet()
+            touch(target)
             return
         }
 
         ensureSources(copy, source)
+        ensureFieldSources(copy, source)
+        copy.put("_storeId", nextStoreId++)
         events.add(copy)
-        if (events.size > MAX_EVENTS) events.removeAt(0)
-        revision.incrementAndGet()
+        touch(copy)
+        if (events.size > MAX_EVENTS) {
+            events.removeAt(0)
+            resetRevision = revision.get()
+        }
+    }
+
+    private fun touch(record: JSONObject) {
+        val rev = revision.incrementAndGet()
+        record.put("_storeRevision", rev)
     }
 
     private fun isMirroredReplay(record: JSONObject, source: String): Boolean {
@@ -58,7 +84,7 @@ object NetworkDebugStore {
             val keys = record.keys()
             while (keys.hasNext()) {
                 val key = keys.next()
-                if (key == "capturedSources") continue
+                if (key in setOf("capturedSources", "_fieldSources", "_storeId", "_storeRevision")) continue
                 val a = record.opt(key)
                 val b = candidate.opt(key)
                 if ((a == null) != (b == null) || (a != null && a.toString() != b?.toString())) {
@@ -144,24 +170,52 @@ object NetworkDebugStore {
         return sources
     }
 
+    private fun ensureFieldSources(record: JSONObject, source: String): JSONObject {
+        val map = record.optJSONObject("_fieldSources") ?: JSONObject().also { record.put("_fieldSources", it) }
+        val keys = record.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            if (key.startsWith("_") || key in setOf("source", "capturedSources")) continue
+            if (!map.has(key) && source.isNotBlank()) map.put(key, source)
+        }
+        return map
+    }
+
     private fun mergeInto(target: JSONObject, incoming: JSONObject, source: String) {
         ensureSources(target, target.optString("source", ""))
         ensureSources(target, source)
+        val targetFields = ensureFieldSources(target, target.optString("source", ""))
+        val incomingFields = incoming.optJSONObject("_fieldSources")
         val keys = incoming.keys()
         while (keys.hasNext()) {
             val key = keys.next()
-            if (key == "source" || key == "url" || key == "time" || key == "method" || key == "capturedSources") continue
+            if (key in setOf("source", "url", "time", "method", "capturedSources", "_fieldSources", "_storeId", "_storeRevision")) continue
             val value = incoming.opt(key)
-            if (value != null && value != JSONObject.NULL) target.put(key, value)
+            if (value != null && value != JSONObject.NULL) {
+                target.put(key, value)
+                val fieldSource = incomingFields?.optString(key, "").orEmpty().ifBlank { source }
+                if (fieldSource.isNotBlank()) targetFields.put(key, fieldSource)
+            }
         }
     }
 
     @Synchronized fun clear() {
         events.clear()
-        revision.incrementAndGet()
+        val rev = revision.incrementAndGet()
+        resetRevision = rev
     }
 
     @Synchronized fun snapshot(): List<JSONObject> = events.map { JSONObject(it.toString()) }
+
+    @Synchronized fun delta(afterRevision: Long): Delta {
+        val current = revision.get()
+        if (afterRevision < 0L || afterRevision < resetRevision) {
+            return Delta(current, true, events.map { JSONObject(it.toString()) })
+        }
+        if (afterRevision == current) return Delta(current, false, emptyList())
+        val changed = events.filter { it.optLong("_storeRevision", 0L) > afterRevision }.map { JSONObject(it.toString()) }
+        return Delta(current, false, changed)
+    }
 
     @Synchronized fun json(): JSONArray {
         val out = JSONArray()
