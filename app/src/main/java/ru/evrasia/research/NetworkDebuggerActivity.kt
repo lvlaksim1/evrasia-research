@@ -50,7 +50,6 @@ import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
-import kotlin.math.abs
 
 class NetworkDebuggerActivity : AppCompatActivity() {
     private val bg = Color.rgb(6,14,12)
@@ -93,10 +92,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private var pendingBinaryName = "response.bin"
     private var pendingBinaryMime = "application/octet-stream"
 
-    private val displayMergeSources = setOf("webview","resource-copy","resource-timing","fetch","fetch-meta","xhr","xhr-meta")
     private val displaySourceOrder = listOf("webview","fetch","xhr","resource-timing","resource-copy","replay","fetch-meta","xhr-meta")
-    private val displayMergeWindowMs = 1200L
-    private val strongDuplicateWindowMs = 90L
     private val typeFilters = listOf("ALL","JSON","HTML","JS","CSS","IMG","PDF","TEXT","BIN","OTHER")
     private val methodFilters = listOf("ALL","GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD","WS","SSE","OTHER")
 
@@ -383,133 +379,9 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         counter.text="$prefix · $requests запросов · $actions действий · $errors ошибок${if(filteredFlag)" · показано ${items.size}" else ""}"
     }
 
-    private fun mergeForDisplay(source:List<JSONObject>):List<JSONObject>{
-        val out=mutableListOf<JSONObject>()
-        val buckets=HashMap<String,MutableList<JSONObject>>()
-        source.forEach{original->
-            val event=JSONObject(original.toString())
-            if(!isDisplayMergeable(event)){
-                out.add(event)
-                return@forEach
-            }
-            val time=event.optLong("time",0L)
-            val key=displayMergeKey(event)
-            val candidates=buckets.getOrPut(key){mutableListOf()}
-            if(time>0L)candidates.removeAll{candidate->
-                val candidateTime=candidate.optLong("time",0L)
-                candidateTime>0L&&abs(candidateTime-time)>displayMergeWindowMs
-            }
-            val incomingSources=eventSources(event)
-            val target=candidates.filter{candidate->eventSources(candidate).intersect(incomingSources).isEmpty()}.minByOrNull{candidate->
-                val candidateTime=candidate.optLong("time",0L)
-                if(time>0L&&candidateTime>0L)abs(candidateTime-time) else Long.MAX_VALUE
-            }
-            if(target!=null&&timesCompatible(target,event)){
-                val targetTime=target.optLong("time",0L)
-                val delta=if(time>0L&&targetTime>0L)abs(time-targetTime) else displayMergeWindowMs
-                mergeDisplayInto(target,event,delta)
-            }else{
-                if(incomingSources.size>1)event.put("_displaySources",orderedSourceLabel(incomingSources))
-                out.add(event)
-                candidates.add(event)
-            }
-        }
-        return collapseStrongDuplicates(out)
-    }
+    private fun mergeForDisplay(source:List<JSONObject>):List<JSONObject> = NetworkDisplayMerger.merge(source)
 
-    private fun collapseStrongDuplicates(source:List<JSONObject>):List<JSONObject>{
-        val out=mutableListOf<JSONObject>()
-        val recent=HashMap<String,MutableList<JSONObject>>()
-        source.forEach{event->
-            if(!isDisplayMergeable(event)){
-                out.add(event)
-                return@forEach
-            }
-            val key=displayMergeKey(event)
-            val time=event.optLong("time",0L)
-            val candidates=recent.getOrPut(key){mutableListOf()}
-            if(time>0L)candidates.removeAll{candidate->
-                val ct=candidate.optLong("time",0L)
-                ct>0L&&abs(ct-time)>strongDuplicateWindowMs
-            }
-            val target=candidates.minByOrNull{candidate->
-                val ct=candidate.optLong("time",0L)
-                if(time>0L&&ct>0L)abs(ct-time) else Long.MAX_VALUE
-            }
-            if(target!=null&&strongDuplicateCandidate(target,event)){
-                val delta=abs(target.optLong("time",0L)-time)
-                mergeDisplayInto(target,event,delta)
-                target.put("_deduplicated",true)
-            }else{
-                out.add(event)
-                candidates.add(event)
-            }
-        }
-        return out
-    }
-
-    private fun strongDuplicateCandidate(a:JSONObject,b:JSONObject):Boolean{
-        val ta=a.optLong("time",0L)
-        val tb=b.optLong("time",0L)
-        if(ta<=0L||tb<=0L||abs(ta-tb)>strongDuplicateWindowMs)return false
-        val sa=a.optInt("status",0)
-        val sb=b.optInt("status",0)
-        if(sa>0&&sb>0&&sa!=sb)return false
-        val sourcesA=eventSources(a)
-        val sourcesB=eventSources(b)
-        if(sourcesA==sourcesB||sourcesA.intersect(sourcesB).isEmpty())return false
-
-        var evidence=0
-        val sizeA=bestResponseSize(a)
-        val sizeB=bestResponseSize(b)
-        if(sizeA>0L&&sizeB>0L){if(sizeA!=sizeB)return false else evidence++}
-        val durationA=a.optDouble("duration",-1.0)
-        val durationB=b.optDouble("duration",-1.0)
-        if(durationA>=0.0&&durationB>=0.0){if(abs(durationA-durationB)>3.0)return false else evidence++}
-        val bodyA=responseBodyText(a).takeIf{it.isNotBlank()&&it!="[binary]"&&it!="[non-text response]"}
-        val bodyB=responseBodyText(b).takeIf{it.isNotBlank()&&it!="[binary]"&&it!="[non-text response]"}
-        if(bodyA!=null&&bodyB!=null){if(bodyA!=bodyB)return false else evidence+=2}
-        val kindA=responseKind(a)
-        val kindB=responseKind(b)
-        if(kindA!="OTHER"&&kindB!="OTHER"){if(kindA!=kindB)return false else evidence++}
-        val subset=sourcesA.containsAll(sourcesB)||sourcesB.containsAll(sourcesA)
-        return evidence>=2||(subset&&evidence>=1&&abs(ta-tb)<=25L)
-    }
-
-    private fun bestResponseSize(event:JSONObject):Long{
-        listOf("responseSize","decodedBodySize","encodedBodySize","transferSize").forEach{key->
-            if(event.has(key)){
-                val value=event.optLong(key,-1L)
-                if(value>0L)return value
-            }
-        }
-        return -1L
-    }
-
-    private fun isDisplayMergeable(event:JSONObject):Boolean{
-        if(event.optString("url","").isBlank())return false
-        return eventSources(event).any{it in displayMergeSources}
-    }
-
-    private fun displayMergeKey(event:JSONObject):String="$${methodOf(event)}\n${event.optString("url","")}".removePrefix("$")
-
-    private fun timesCompatible(a:JSONObject,b:JSONObject):Boolean{
-        val ta=a.optLong("time",0L)
-        val tb=b.optLong("time",0L)
-        if(ta<=0L||tb<=0L||abs(ta-tb)>displayMergeWindowMs)return false
-        val sa=a.optInt("status",0)
-        val sb=b.optInt("status",0)
-        return sa<=0||sb<=0||sa==sb
-    }
-
-    private fun eventSources(event:JSONObject):LinkedHashSet<String>{
-        val out=linkedSetOf<String>()
-        event.optString("source","").takeIf{it.isNotBlank()}?.let{out.add(it)}
-        val captured=event.optJSONArray("capturedSources")
-        if(captured!=null)for(i in 0 until captured.length())captured.optString(i).takeIf{it.isNotBlank()}?.let{out.add(it)}
-        event.optString("_displaySources","").split('+').map{it.trim()}.filter{it.isNotBlank()}.forEach{out.add(it)}
-        return out
-    }
+    private fun eventSources(event:JSONObject) = NetworkEventClassifier.eventSources(event)
 
     private fun orderedSourceLabel(sources:Set<String>):String{
         val ordered=displaySourceOrder.filter{it in sources}.toMutableList()
@@ -519,74 +391,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
     private fun displaySource(event:JSONObject)=event.optString("_displaySources",event.optString("source",""))
 
-    private fun sourceSummary(event:JSONObject):String{
-        val sources=eventSources(event)
-        return if(mergeMode&&sources.size>1)"${sources.size} src" else displaySource(event)
-    }
-
-    private fun mergeDisplayInto(target:JSONObject,incoming:JSONObject,delta:Long){
-        val targetSnapshot=JSONObject(target.toString()).apply{remove("_mergedEvents");remove("_displaySources");remove("_mergeConfidence")}
-        val raw=target.optJSONArray("_mergedEvents")?:JSONArray().also{it.put(targetSnapshot);target.put("_mergedEvents",it)}
-        val incomingRaw=incoming.optJSONArray("_mergedEvents")
-        if(incomingRaw!=null){
-            for(i in 0 until incomingRaw.length())incomingRaw.optJSONObject(i)?.let{raw.put(JSONObject(it.toString()))}
-        }else raw.put(JSONObject(incoming.toString()).apply{remove("_displaySources");remove("_mergeConfidence")})
-
-        val sources=eventSources(target).apply{addAll(eventSources(incoming))}
-        val captured=JSONArray();sources.forEach{captured.put(it)}
-        target.put("capturedSources",captured)
-        target.put("_displaySources",orderedSourceLabel(sources))
-        val confidence=if(delta<=250L)"HIGH" else "MEDIUM"
-        val oldConfidence=target.optString("_mergeConfidence","")
-        target.put("_mergeConfidence",if(oldConfidence=="MEDIUM"||confidence=="MEDIUM")"MEDIUM" else "HIGH")
-
-        val targetFields=target.optJSONObject("_fieldSources")?:JSONObject().also{target.put("_fieldSources",it)}
-        val incomingFields=incoming.optJSONObject("_fieldSources")
-        val incomingSource=incoming.optString("source","")
-
-        val targetTime=target.optLong("time",0L)
-        val incomingTime=incoming.optLong("time",0L)
-        if(incomingTime>0L&&(targetTime<=0L||incomingTime<targetTime)){
-            target.put("time",incomingTime)
-            targetFields.put("time",incomingFields?.optString("time",incomingSource).orEmpty().ifBlank{incomingSource})
-        }
-
-        val keys=incoming.keys()
-        while(keys.hasNext()){
-            val key=keys.next()
-            if(key in setOf("source","url","method","time","capturedSources","_displaySources","_mergedEvents","_mergeConfidence","_fieldSources","_storeId","_storeRevision"))continue
-            val value=incoming.opt(key)?:continue
-            if(value==JSONObject.NULL)continue
-            val current=target.opt(key)
-            if(current is JSONObject&&value is JSONObject){mergeJsonObjects(current,value);continue}
-            if(!meaningful(current)||betterNumeric(current,value)){
-                target.put(key,value)
-                val origin=incomingFields?.optString(key,"").orEmpty().ifBlank{incomingSource}
-                if(origin.isNotBlank())targetFields.put(key,origin)
-            }
-        }
-    }
-
-    private fun mergeJsonObjects(target:JSONObject,incoming:JSONObject){
-        val keys=incoming.keys()
-        while(keys.hasNext()){
-            val key=keys.next()
-            val value=incoming.opt(key)?:continue
-            if(value==JSONObject.NULL)continue
-            val current=target.opt(key)
-            if(current is JSONObject&&value is JSONObject)mergeJsonObjects(current,value)
-            else if(!meaningful(current)||betterNumeric(current,value))target.put(key,value)
-        }
-    }
-
-    private fun meaningful(value:Any?):Boolean=when(value){
-        null,JSONObject.NULL->false
-        is String->value.isNotBlank()&&value!="—"
-        is Number->value.toDouble()!=0.0
-        else->true
-    }
-
-    private fun betterNumeric(current:Any?,incoming:Any?):Boolean=current is Number&&incoming is Number&&current.toDouble()==0.0&&incoming.toDouble()!=0.0
+    private fun sourceSummary(event:JSONObject):String = NetworkDisplayMerger.sourceSummary(event,mergeMode)
 
     private fun computeChanged(events:List<JSONObject>){
         changedIds.clear()
@@ -659,110 +464,23 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         return source.startsWith("websocket-")||source.startsWith("sse-")
     }
 
-    private fun isRealtimeSession(event:JSONObject)=event.optBoolean("_realtimeSession",false)
+    private fun isRealtimeSession(event:JSONObject) = NetworkEventClassifier.isRealtimeSession(event)
 
-    private fun groupEndpoints(source:List<JSONObject>):List<JSONObject>{
-        val groups=linkedMapOf<String,MutableList<JSONObject>>()
-        val passthrough=mutableListOf<JSONObject>()
-        source.forEach{event->
-            if(!isEndpointEligible(event)){
-                passthrough.add(event)
-                return@forEach
-            }
-            val endpoint=normalizeEndpoint(event.optString("url",""))
-            val key="${methodOf(event)}\n$endpoint"
-            groups.getOrPut(key){mutableListOf()}.add(event)
-        }
-        val result=passthrough.toMutableList()
-        groups.forEach{(_,members)->
-            if(members.size<2){result.add(members.first());return@forEach}
-            val latest=members.maxByOrNull{it.optLong("time",0L)}?:members.first()
-            val kinds=members.map{responseKind(it)}.distinct()
-            val arr=JSONArray();members.sortedByDescending{it.optLong("time",0L)}.forEach{arr.put(JSONObject(it.toString()))}
-            result.add(JSONObject()
-                .put("source","endpoint-group")
-                .put("_endpointGroup",true)
-                .put("_groupMethod",methodOf(latest))
-                .put("_groupCount",members.size)
-                .put("_groupEvents",arr)
-                .put("_groupKind",if(kinds.size==1)kinds.first() else "OTHER")
-                .put("url",normalizeEndpoint(latest.optString("url","")))
-                .put("time",latest.optLong("time",0L))
-                .put("status",latest.optInt("status",0)))
-        }
-        return result.sortedByDescending{it.optLong("time",0L)}
-    }
+    private fun groupEndpoints(source:List<JSONObject>):List<JSONObject> = NetworkEndpointAnalyzer.group(source)
 
-    private fun isEndpointEligible(event:JSONObject):Boolean{
-        if(isActionEvent(event)||isRealtimeSession(event)||isEndpointGroup(event))return false
-        val url=event.optString("url","")
-        if(!url.startsWith("http://")&&!url.startsWith("https://"))return false
-        val method=methodOf(event)
-        return method in setOf("GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD")
-    }
+    private fun isEndpointGroup(event:JSONObject) = NetworkEventClassifier.isEndpointGroup(event)
 
-    private fun isEndpointGroup(event:JSONObject)=event.optBoolean("_endpointGroup",false)
+    private fun normalizeEndpoint(raw:String):String = NetworkEndpointAnalyzer.normalize(raw)
 
-    private fun normalizeEndpoint(raw:String):String{
-        return try{
-            val u=URL(raw)
-            val path=u.path.ifBlank{"/"}
-                .replace(Regex("/[0-9]{2,}(?=/|$)"),"/{id}")
-                .replace(Regex("/[0-9a-fA-F]{8}-[0-9a-fA-F-]{20,}(?=/|$)"),"/{uuid}")
-            "${u.host}$path"
-        }catch(_:Exception){raw.substringBefore('?')}
-    }
+    private fun responseKind(event:JSONObject):String = NetworkEventClassifier.responseKind(event)
 
-    private fun responseKind(event:JSONObject):String{
-        if(isActionEvent(event))return "ACTION"
-        if(isRealtimeSession(event))return "OTHER"
-        if(isEndpointGroup(event))return event.optString("_groupKind","OTHER")
-        if(event.optString("source","") in setOf("js-file","script-archive","source-map"))return "JS"
-        val headers=event.optJSONObject("responseHeaders")
-        val mime=event.optString("mimeType",headerValue(headers,"Content-Type")).substringBefore(';').trim().lowercase(Locale.US)
-        when{
-            mime.contains("json")->return "JSON"
-            mime.contains("html")->return "HTML"
-            mime.contains("javascript")||mime.contains("ecmascript")->return "JS"
-            mime.contains("css")->return "CSS"
-            mime.startsWith("image/")->return "IMG"
-            mime.contains("pdf")->return "PDF"
-            mime.startsWith("text/")||mime.contains("xml")||mime.contains("x-www-form-urlencoded")->return "TEXT"
-            mime.contains("octet-stream")||mime.startsWith("font/")||mime.startsWith("audio/")||mime.startsWith("video/")||mime.contains("zip")||mime.contains("gzip")->return "BIN"
-        }
-        val path=event.optString("url","").substringBefore('?').substringBefore('#').lowercase(Locale.US)
-        when{
-            path.endsWith(".json")||path.endsWith(".map")->return "JSON"
-            path.endsWith(".html")||path.endsWith(".htm")->return "HTML"
-            path.endsWith(".js")||path.endsWith(".mjs")->return "JS"
-            path.endsWith(".css")->return "CSS"
-            path.endsWith(".png")||path.endsWith(".jpg")||path.endsWith(".jpeg")||path.endsWith(".gif")||path.endsWith(".webp")||path.endsWith(".svg")||path.endsWith(".ico")->return "IMG"
-            path.endsWith(".pdf")->return "PDF"
-            path.endsWith(".txt")||path.endsWith(".xml")||path.endsWith(".csv")->return "TEXT"
-            path.endsWith(".woff")||path.endsWith(".woff2")||path.endsWith(".ttf")||path.endsWith(".otf")||path.endsWith(".zip")||path.endsWith(".gz")||path.endsWith(".mp4")||path.endsWith(".webm")||path.endsWith(".mp3")->return "BIN"
-        }
-        val body=responseBodyText(event).trim()
-        if(body=="[binary]"||body=="[non-text response]")return "BIN"
-        if(body.startsWith("{")||body.startsWith("["))return "JSON"
-        if(body.startsWith("<!doctype",true)||body.startsWith("<html",true)||body.startsWith("<body",true))return "HTML"
-        if(body.isNotBlank())return "TEXT"
-        return if(mime.isNotBlank())"BIN" else "OTHER"
-    }
+    private fun eventLocation(event:JSONObject):String = NetworkEventClassifier.eventLocation(event)
 
-    private fun eventLocation(event:JSONObject):String=event.optString("url","").ifBlank{event.optString("page",event.optString("newURL",""))}
+    private fun methodOf(event:JSONObject):String = NetworkEventClassifier.methodOf(event)
 
-    private fun methodOf(event:JSONObject):String{
-        if(isEndpointGroup(event))return event.optString("_groupMethod","OTHER")
-        if(isRealtimeSession(event))return event.optString("_realtimeProtocol","OTHER")
-        val source=event.optString("source","")
-        if(source.startsWith("websocket"))return "WS"
-        if(source.startsWith("sse"))return "SSE"
-        if(isActionEvent(event))return "ACTION"
-        return event.optString("method","").ifBlank{"OTHER"}.uppercase(Locale.US)
-    }
+    private fun responseBodyText(event:JSONObject):String = NetworkEventClassifier.responseBodyText(event)
 
-    private fun responseBodyText(event:JSONObject)=event.optString("responseBody",event.optString("data",""))
-    private fun hasRequestBody(event:JSONObject)=event.optString("requestBody","").isNotBlank()
+    private fun hasRequestBody(event:JSONObject):Boolean = NetworkEventClassifier.hasRequestBody(event)
 
     private fun isCached(event:JSONObject):Boolean{
         val cache=event.optString("cache","")
@@ -797,34 +515,17 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         if(event.optString("source","")=="replay")add("REPLAY")
     }.joinToString("  ")
 
-    private fun isApiRelevant(event:JSONObject):Boolean{
-        if(isActionEvent(event)||isRealtimeSession(event))return true
-        val sources=eventSources(event)
-        if(event.optString("source","")=="replay")return true
-        if(sources.any{it in setOf("fetch","fetch-meta","xhr","xhr-meta","websocket-open","websocket-send","websocket-receive","sse-open","sse-message","beacon")})return true
-        val method=methodOf(event)
-        if(method in setOf("POST","PUT","PATCH","DELETE","WS","SSE"))return true
-        if(hasRequestBody(event)||responseKind(event)=="JSON")return true
-        val url=event.optString("url","").lowercase(Locale.US)
-        return url.contains("/api/")||url.contains("/graphql")||url.contains("/ajax")||url.contains("/rest/")
-    }
+    private fun isApiRelevant(event:JSONObject):Boolean = NetworkEventClassifier.isApiRelevant(event)
 
-    private fun isPlainRequestEvent(e:JSONObject)=e.optString("source") in setOf(
-        "fetch","fetch-meta","xhr","xhr-meta","webview","resource-copy","resource-timing","navigation","navigation-timing","new-window",
-        "websocket-open","websocket-send","websocket-receive","sse-open","sse-message","beacon","js-file","script-archive","replay"
-    )
+    private fun isPlainRequestEvent(event:JSONObject):Boolean = NetworkEventClassifier.isPlainRequestEvent(event)
 
-    private fun isRequestEvent(e:JSONObject)=isPlainRequestEvent(e)||isRealtimeSession(e)||isEndpointGroup(e)
-    private fun isActionEvent(e:JSONObject)=e.optString("source","")=="user-action"
+    private fun isRequestEvent(event:JSONObject):Boolean = NetworkEventClassifier.isRequestEvent(event)
 
-    private fun isJsEvent(e:JSONObject):Boolean{
-        val u=e.optString("url","").substringBefore('?').lowercase(Locale.US)
-        return e.optString("source") in setOf("js-file","script-archive","source-map")||u.endsWith(".js")||u.endsWith(".mjs")||e.optString("mimeType","").contains("javascript",true)
-    }
+    private fun isActionEvent(event:JSONObject):Boolean = NetworkEventClassifier.isActionEvent(event)
 
-    private fun hostOf(url:String):String?=try{
-        if(url.startsWith("http://")||url.startsWith("https://"))URL(url).host else null
-    }catch(_:Exception){null}
+    private fun isJsEvent(event:JSONObject):Boolean = NetworkEventClassifier.isJsEvent(event)
+
+    private fun hostOf(url:String):String? = NetworkEventClassifier.hostOf(url)
 
     private fun showEndpointGroup(group:JSONObject){
         val arr=group.optJSONArray("_groupEvents")?:return
