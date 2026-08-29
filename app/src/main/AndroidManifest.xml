@@ -12,6 +12,11 @@
             android:authorities="${applicationId}.cookieTrace"
             android:exported="false"
             android:initOrder="100" />
+        <provider
+            android:name=".CookieTraceV48UiProvider"
+            android:authorities="${applicationId}.cookieTraceUi"
+            android:exported="false"
+            android:initOrder="90" />
         <activity android:name=".WebResearchV10Activity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
