@@ -48,6 +48,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlin.math.abs
 
 class NetworkDebuggerActivity : AppCompatActivity() {
     private val bg = Color.rgb(6,14,12)
@@ -66,6 +67,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private lateinit var counter: TextView
     private lateinit var recordButton: Button
     private lateinit var jsButton: Button
+    private lateinit var mergeButton: Button
     private lateinit var domainSpinner: Spinner
     private lateinit var search: EditText
     private val allItems = mutableListOf<JSONObject>()
@@ -75,9 +77,13 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private val listTimeFormat = SimpleDateFormat("HH:mm:ss.SSS",Locale.US)
     private var lastRevision = -1L
     private var jsOnly = false
+    private var mergeMode = false
     private var pendingBinary: ByteArray? = null
     private var pendingBinaryName = "response.bin"
     private var pendingBinaryMime = "application/octet-stream"
+    private val displayMergeSources = setOf("webview","resource-copy","resource-timing","fetch","fetch-meta","xhr","xhr-meta")
+    private val displaySourceOrder = listOf("webview","fetch","fetch-meta","xhr","xhr-meta","resource-timing","resource-copy")
+    private val displayMergeWindowMs = 1200L
 
     private val refresh = object : Runnable {
         override fun run() {
@@ -103,6 +109,9 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         jsButton = compactButton("JS") { jsOnly=!jsOnly; updateJsButton(); applyFilters() }
         toolbar.addView(jsButton)
         updateJsButton()
+        mergeButton = compactButton("") { mergeMode=!mergeMode; updateMergeButton(); applyFilters() }
+        toolbar.addView(mergeButton)
+        updateMergeButton()
         toolbarScroll.addView(toolbar)
         root.addView(toolbarScroll, LinearLayout.LayoutParams(-1,dp(48)))
 
@@ -137,6 +146,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
     private fun updateRecordButton(){ if(::recordButton.isInitialized){ recordButton.text=if(NetworkDebugStore.recording) "● REC" else "○ STOP"; recordButton.setTextColor(if(NetworkDebugStore.recording) accent else muted) } }
     private fun updateJsButton(){ if(::jsButton.isInitialized){ jsButton.text=if(jsOnly) "JS ✓" else "JS"; jsButton.setTextColor(if(jsOnly) accent else textColor) } }
+    private fun updateMergeButton(){ if(::mergeButton.isInitialized){ mergeButton.text=if(mergeMode) "Объединено ✓" else "Раздельно"; mergeButton.setTextColor(if(mergeMode) accent else textColor) } }
 
     private fun reload(){
         allItems.clear(); allItems.addAll(NetworkDebugStore.snapshot().asReversed())
@@ -163,8 +173,9 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private fun applyFilters(){
         val domain=if(::domainSpinner.isInitialized && domainSpinner.selectedItem!=null) domainSpinner.selectedItem.toString() else "Все домены"
         val q=if(::search.isInitialized) search.text.toString().trim() else ""
+        val displayItems=if(mergeMode) mergeForDisplay(allItems) else allItems
         items.clear()
-        allItems.filterTo(items){ e ->
+        displayItems.filterTo(items){ e ->
             val domainOk = domain=="Все домены" || hostOf(e.optString("url",""))==domain
             val jsOk = !jsOnly || isJsEvent(e)
             val searchOk = q.isBlank() || e.toString().contains(q,true)
@@ -176,9 +187,115 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             val js=allItems.count{isJsEvent(it)}
             val resources=allItems.count{it.optString("source")=="resource-copy" || it.optString("source")=="webview"}
             val errors=allItems.count{it.has("error")||it.optInt("status",0)>=400}
-            counter.text="${allItems.size} событий · $requests запросов · $js JS · $resources ресурсов · $errors ошибок${if(q.isNotBlank()) " · найдено ${items.size}" else ""}"
+            val prefix=if(mergeMode) "${allItems.size} событий → ${displayItems.size} строк" else "${allItems.size} событий"
+            counter.text="$prefix · $requests запросов · $js JS · $resources ресурсов · $errors ошибок${if(q.isNotBlank()) " · найдено ${items.size}" else ""}"
         }
     }
+
+    private fun mergeForDisplay(source:List<JSONObject>):List<JSONObject>{
+        val out=mutableListOf<JSONObject>()
+        val buckets=HashMap<String,MutableList<JSONObject>>()
+        source.forEach{original->
+            val event=JSONObject(original.toString())
+            if(!isDisplayMergeable(event)){
+                out.add(event)
+                return@forEach
+            }
+            val time=event.optLong("time",0L)
+            val key=displayMergeKey(event)
+            val candidates=buckets.getOrPut(key){mutableListOf()}
+            if(time>0L)candidates.removeAll{candidate->val candidateTime=candidate.optLong("time",0L);candidateTime>0L&&abs(candidateTime-time)>displayMergeWindowMs}
+            val incomingSources=eventSources(event)
+            val target=candidates.filter{candidate->eventSources(candidate).intersect(incomingSources).isEmpty()}.minByOrNull{candidate->
+                val candidateTime=candidate.optLong("time",0L)
+                if(time>0L&&candidateTime>0L)abs(candidateTime-time) else Long.MAX_VALUE
+            }
+            if(target!=null&&timesCompatible(target,event)){
+                mergeDisplayInto(target,event)
+            }else{
+                if(incomingSources.size>1)event.put("_displaySources",orderedSourceLabel(incomingSources))
+                out.add(event)
+                candidates.add(event)
+            }
+        }
+        return out
+    }
+
+    private fun isDisplayMergeable(event:JSONObject):Boolean{
+        if(event.optString("url","").isBlank())return false
+        return eventSources(event).any{it in displayMergeSources}
+    }
+
+    private fun displayMergeKey(event:JSONObject):String{
+        val method=event.optString("method","GET").ifBlank{"GET"}.uppercase(Locale.US)
+        return "$method\n${event.optString("url","")}"
+    }
+
+    private fun timesCompatible(a:JSONObject,b:JSONObject):Boolean{
+        val ta=a.optLong("time",0L);val tb=b.optLong("time",0L)
+        if(ta<=0L||tb<=0L)return false
+        if(abs(ta-tb)>displayMergeWindowMs)return false
+        val sa=a.optInt("status",0);val sb=b.optInt("status",0)
+        return sa<=0||sb<=0||sa==sb
+    }
+
+    private fun eventSources(event:JSONObject):LinkedHashSet<String>{
+        val out=linkedSetOf<String>()
+        event.optString("source","").takeIf{it.isNotBlank()}?.let{out.add(it)}
+        val captured=event.optJSONArray("capturedSources")
+        if(captured!=null)for(i in 0 until captured.length())captured.optString(i).takeIf{it.isNotBlank()}?.let{out.add(it)}
+        event.optString("_displaySources","").split('+').map{it.trim()}.filter{it.isNotBlank()}.forEach{out.add(it)}
+        return out
+    }
+
+    private fun orderedSourceLabel(sources:Set<String>):String{
+        val ordered=displaySourceOrder.filter{it in sources}.toMutableList()
+        sources.filter{it !in ordered}.sorted().forEach{ordered.add(it)}
+        return ordered.joinToString(" + ")
+    }
+
+    private fun displaySource(event:JSONObject)=event.optString("_displaySources",event.optString("source",""))
+
+    private fun mergeDisplayInto(target:JSONObject,incoming:JSONObject){
+        val targetSnapshot=JSONObject(target.toString()).apply{remove("_mergedEvents");remove("_displaySources")}
+        val raw=target.optJSONArray("_mergedEvents")?:JSONArray().also{it.put(targetSnapshot);target.put("_mergedEvents",it)}
+        val incomingRaw=incoming.optJSONArray("_mergedEvents")
+        if(incomingRaw!=null){for(i in 0 until incomingRaw.length())incomingRaw.optJSONObject(i)?.let{raw.put(JSONObject(it.toString()))}}
+        else raw.put(JSONObject(incoming.toString()).apply{remove("_displaySources")})
+
+        val sources=eventSources(target).apply{addAll(eventSources(incoming))}
+        val captured=JSONArray();sources.forEach{captured.put(it)}
+        target.put("capturedSources",captured)
+        target.put("_displaySources",orderedSourceLabel(sources))
+
+        val targetTime=target.optLong("time",0L);val incomingTime=incoming.optLong("time",0L)
+        if(incomingTime>0L&&(targetTime<=0L||incomingTime<targetTime))target.put("time",incomingTime)
+
+        val keys=incoming.keys()
+        while(keys.hasNext()){
+            val key=keys.next()
+            if(key in setOf("source","url","method","time","capturedSources","_displaySources","_mergedEvents"))continue
+            val value=incoming.opt(key)?:continue
+            if(value==JSONObject.NULL)continue
+            val current=target.opt(key)
+            if(current is JSONObject&&value is JSONObject){mergeJsonObjects(current,value);continue}
+            if(!meaningful(current)||betterNumeric(current,value))target.put(key,value)
+        }
+    }
+
+    private fun mergeJsonObjects(target:JSONObject,incoming:JSONObject){
+        val keys=incoming.keys()
+        while(keys.hasNext()){
+            val key=keys.next();val value=incoming.opt(key)?:continue
+            if(value==JSONObject.NULL)continue
+            val current=target.opt(key)
+            if(current is JSONObject&&value is JSONObject)mergeJsonObjects(current,value)
+            else if(!meaningful(current)||betterNumeric(current,value))target.put(key,value)
+        }
+    }
+
+    private fun meaningful(value:Any?):Boolean=when(value){null,JSONObject.NULL->false;is String->value.isNotBlank()&&value!="—";is Number->value.toDouble()!=0.0;else->true}
+    private fun betterNumeric(current:Any?,incoming:Any?):Boolean=current is Number&&incoming is Number&&current.toDouble()==0.0&&incoming.toDouble()!=0.0
 
     private fun isRequestEvent(e:JSONObject)=e.optString("source") in setOf("fetch","fetch-meta","xhr","xhr-meta","webview","resource-copy","resource-timing","navigation","navigation-timing","new-window","websocket-open","websocket-send","websocket-receive","sse-open","sse-message","beacon","js-file","script-archive")
     private fun isJsEvent(e:JSONObject):Boolean { val u=e.optString("url","").substringBefore('?').lowercase(Locale.US); return e.optString("source") in setOf("js-file","script-archive","source-map") || u.endsWith(".js") || u.endsWith(".mjs") || e.optString("mimeType","").contains("javascript",true) }
@@ -230,9 +347,12 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             content.addView(codeText(decorated))
         }
 
-        val rawButton=compactButton("RAW EVENT  ▾"){}
-        val rawView=codeText(highlightPlain(event.toString(2),query)).apply{visibility=View.GONE}
-        rawButton.setOnClickListener{rawView.visibility=if(rawView.visibility==View.VISIBLE)View.GONE else View.VISIBLE;rawButton.text=if(rawView.visibility==View.VISIBLE)"RAW EVENT  ▴" else "RAW EVENT  ▾"}
+        val mergedRaw=event.optJSONArray("_mergedEvents")
+        val rawLabel=if(mergedRaw!=null&&mergedRaw.length()>1)"RAW EVENTS  ▾" else "RAW EVENT  ▾"
+        val rawButton=compactButton(rawLabel){}
+        val rawText=if(mergedRaw!=null&&mergedRaw.length()>0)mergedRaw.toString(2) else event.toString(2)
+        val rawView=codeText(highlightPlain(rawText,query)).apply{visibility=View.GONE}
+        rawButton.setOnClickListener{rawView.visibility=if(rawView.visibility==View.VISIBLE)View.GONE else View.VISIBLE;rawButton.text=if(rawView.visibility==View.VISIBLE)rawLabel.replace('▾','▴') else rawLabel}
         content.addView(rawButton,LinearLayout.LayoutParams(-1,dp(38)).apply{setMargins(0,dp(9),0,dp(5))})
         content.addView(rawView)
 
@@ -272,7 +392,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         append("Method: ").append(event.optString("method","—")).append('\n')
         append("URL: ").append(event.optString("url","—")).append('\n')
         appendUrlParts(this,event.optString("url",""))
-        append("Source: ").append(event.optString("source","—")).append('\n')
+        append("Source: ").append(displaySource(event).ifBlank{"—"}).append('\n')
         if(event.has("time"))append("Time: ").append(formatTime(event.optLong("time"))).append("  (").append(event.optLong("time")).append(")\n")
         appendField(this,event,"initiatorType","Initiator type")
         appendField(this,event,"initiatorStack","Initiator stack")
@@ -458,7 +578,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             val e=getItem(position)
             val row=(convertView as? LinearLayout)?:LinearLayout(this@NetworkDebuggerActivity).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(10),dp(7),dp(10),dp(7));background=rounded(panel,0f,Color.rgb(26,48,39));addView(TextView(this@NetworkDebuggerActivity).apply{tag="top";textSize=12f;typeface=Typeface.DEFAULT_BOLD});addView(TextView(this@NetworkDebuggerActivity).apply{tag="url";textSize=11f;maxLines=2;setPadding(0,dp(2),0,0)})}
             val top=row.findViewWithTag<TextView>("top");val url=row.findViewWithTag<TextView>("url")
-            val status=e.optInt("status",0);val source=e.optString("source","");val method=e.optString("method",if(isJsEvent(e))"JS" else source.uppercase(Locale.US));val whenText=if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"
+            val status=e.optInt("status",0);val source=displaySource(e);val method=e.optString("method",if(isJsEvent(e))"JS" else source.uppercase(Locale.US));val whenText=if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"
             top.text=buildString{append(whenText).append("  ");append(if(isJsEvent(e))"JS" else method);if(status>0)append("  ").append(status);if(e.has("duration"))append("  ").append(e.optLong("duration")).append(" ms");if(e.has("responseSize"))append("  ").append(e.optLong("responseSize")).append(" B");append("  · ").append(source)}
             top.setTextColor(if(status>=400||e.has("error"))bad else if(isJsEvent(e)||status in 200..399)accent else textColor)
             url.text=e.optString("url",e.optString("message","—"));url.setTextColor(muted);return row
