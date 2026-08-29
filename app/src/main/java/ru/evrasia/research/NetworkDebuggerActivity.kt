@@ -11,10 +11,8 @@ import android.os.Handler
 import android.os.Looper
 import android.text.Spannable
 import android.text.SpannableString
-import android.text.SpannableStringBuilder
 import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
-import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -91,10 +89,10 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
 
-        val header = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12),dp(8),dp(12),dp(6)) }
-        header.addView(TextView(this).apply { text="NETWORK"; setTextColor(textColor); textSize=18f; typeface=Typeface.DEFAULT_BOLD; letterSpacing=.08f })
-        header.addView(TextView(this).apply { text="requests · responses · js · cookies"; setTextColor(accent); textSize=11f })
-        root.addView(header)
+        val header = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        header.addView(TextView(this).apply { text="NETWORK" })
+        header.addView(TextView(this).apply { text="LIVE" })
+        root.addView(header, LinearLayout.LayoutParams(-1,0))
 
         val toolbarScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled=false; setBackgroundColor(panel) }
         val toolbar = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(8),dp(5),dp(8),dp(5)) }
@@ -143,8 +141,59 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private fun updateJsButton(){ if(::jsButton.isInitialized){ jsButton.text=if(jsOnly) "JS ✓" else "JS"; jsButton.setTextColor(if(jsOnly) accent else textColor) } }
 
     private fun reload(){
-        allItems.clear(); allItems.addAll(NetworkDebugStore.snapshot().asReversed())
+        allItems.clear()
+        allItems.addAll(mergeEvents(NetworkDebugStore.snapshot()).asReversed())
         rebuildDomains(); applyFilters()
+    }
+
+    private fun mergeEvents(raw:List<JSONObject>):List<JSONObject>{
+        val out=mutableListOf<JSONObject>()
+        raw.forEach { sourceEvent ->
+            val source=sourceEvent.optString("source","")
+            if(source !in setOf("webview","resource-copy","resource-timing")){
+                out.add(JSONObject(sourceEvent.toString()))
+                return@forEach
+            }
+            val url=sourceEvent.optString("url","")
+            val time=sourceEvent.optLong("time",0L)
+            var target:JSONObject?=null
+            for(i in out.indices.reversed()){
+                val candidate=out[i]
+                if(candidate.optString("source")!="resource")continue
+                if(candidate.optString("url")!=url)continue
+                val seen=candidate.optJSONArray("mergedSources")?:JSONArray()
+                var already=false
+                for(j in 0 until seen.length())if(seen.optString(j)==source)already=true
+                if(already)continue
+                val dt=kotlin.math.abs(candidate.optLong("time",time)-time)
+                if(dt<=15000){target=candidate;break}
+            }
+            if(target==null){
+                target=JSONObject().put("source","resource").put("url",url).put("time",time).put("mergedSources",JSONArray())
+                out.add(target)
+            }
+            mergeInto(target,sourceEvent,source)
+        }
+        return out
+    }
+
+    private fun mergeInto(target:JSONObject,part:JSONObject,source:String){
+        val sources=target.optJSONArray("mergedSources")?:JSONArray().also{target.put("mergedSources",it)}
+        sources.put(source)
+        if(source=="webview"){
+            if(part.has("method"))target.put("method",part.optString("method"))
+            if(part.has("headers"))target.put("headers",JSONObject(part.optJSONObject("headers")?.toString()?:"{}"))
+            if(part.optLong("time",0)>0)target.put("time",part.optLong("time"))
+        }
+        val keys=part.keys()
+        while(keys.hasNext()){
+            val k=keys.next()
+            if(k in setOf("source","url","time","method","headers"))continue
+            val value=part.opt(k)
+            if(value!=null&&value!=JSONObject.NULL)target.put(k,value)
+        }
+        if(!target.has("method"))target.put("method",part.optString("method","GET"))
+        if(!target.has("time")||target.optLong("time")<=0)target.put("time",part.optLong("time",System.currentTimeMillis()))
     }
 
     private fun rebuildDomains(){
@@ -178,13 +227,13 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         if(::counter.isInitialized){
             val requests=allItems.count{isRequestEvent(it)}
             val js=allItems.count{isJsEvent(it)}
-            val resources=allItems.count{it.optString("source")=="resource-copy" || it.optString("source")=="webview"}
+            val resources=allItems.count{it.optString("source")=="resource"}
             val errors=allItems.count{it.has("error")||it.optInt("status",0)>=400}
             counter.text="${allItems.size} событий · $requests запросов · $js JS · $resources ресурсов · $errors ошибок${if(q.isNotBlank()) " · найдено ${items.size}" else ""}"
         }
     }
 
-    private fun isRequestEvent(e:JSONObject)=e.optString("source") in setOf("fetch","fetch-meta","xhr","xhr-meta","webview","resource-copy","resource-timing","navigation","navigation-timing","new-window","websocket-open","websocket-send","websocket-receive","sse-open","sse-message","beacon","js-file","script-archive")
+    private fun isRequestEvent(e:JSONObject)=e.optString("source") in setOf("resource","fetch","fetch-meta","xhr","xhr-meta","navigation","navigation-timing","new-window","websocket-open","websocket-send","websocket-receive","sse-open","sse-message","beacon","js-file","script-archive")
     private fun isJsEvent(e:JSONObject):Boolean { val u=e.optString("url","").substringBefore('?').lowercase(Locale.US); return e.optString("source") in setOf("js-file","script-archive","source-map") || u.endsWith(".js") || u.endsWith(".mjs") || e.optString("mimeType","").contains("javascript",true) }
     private fun hostOf(url:String):String?=try { if(url.startsWith("http://")||url.startsWith("https://")) URL(url).host else null } catch(_:Exception){null}
 
@@ -245,6 +294,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         append("URL: ").append(event.optString("url","—")).append('\n')
         appendUrlParts(this,event.optString("url",""))
         append("Source: ").append(event.optString("source","—")).append('\n')
+        event.optJSONArray("mergedSources")?.let{append("Merged sources: ").append(it.toString()).append('\n')}
         if(event.has("time"))append("Time: ").append(formatTime(event.optLong("time"))).append("  (").append(event.optLong("time")).append(")\n")
         appendField(this,event,"initiatorType","Initiator type")
         appendField(this,event,"initiatorStack","Initiator stack")
@@ -290,6 +340,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private fun appendField(out:StringBuilder,event:JSONObject,key:String,label:String){if(event.has(key)){val v=event.opt(key);if(v!=null&&v!=JSONObject.NULL&&v.toString().isNotBlank())out.append(label).append(": ").append(v).append('\n')}}
     private fun appendDecodedField(out:StringBuilder,event:JSONObject,key:String,label:String){if(event.has(key)){val v=event.opt(key);if(v!=null&&v!=JSONObject.NULL&&v.toString().isNotBlank())out.append(label).append(": ").append(decodePercentText(v.toString())).append('\n')}}
     private fun formatTime(ms:Long)=SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS",Locale.US).format(Date(ms))
+    private fun listTime(ms:Long)=SimpleDateFormat("HH:mm:ss.SSS",Locale.US).format(Date(ms))
     private fun urlDecode(s:String)=try{URLDecoder.decode(s,"UTF-8")}catch(_:Exception){s}
     private fun prettyJson(obj:JSONObject)=try{obj.toString(2)}catch(_:Exception){obj.toString()}
 
@@ -460,8 +511,8 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             val e=getItem(position)
             val row=(convertView as? LinearLayout)?:LinearLayout(this@NetworkDebuggerActivity).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(10),dp(7),dp(10),dp(7));background=rounded(panel,0f,Color.rgb(26,48,39));addView(TextView(this@NetworkDebuggerActivity).apply{tag="top";textSize=12f;typeface=Typeface.DEFAULT_BOLD});addView(TextView(this@NetworkDebuggerActivity).apply{tag="url";textSize=11f;maxLines=2;setPadding(0,dp(2),0,0)})}
             val top=row.findViewWithTag<TextView>("top");val url=row.findViewWithTag<TextView>("url")
-            val status=e.optInt("status",0);val source=e.optString("source","");val method=e.optString("method",if(isJsEvent(e))"JS" else source.uppercase(Locale.US))
-            top.text=buildString{append(if(isJsEvent(e))"JS" else method);if(status>0)append("  ").append(status);if(e.has("duration"))append("  ").append(e.optLong("duration")).append(" ms");if(e.has("responseSize"))append("  ").append(e.optLong("responseSize")).append(" B");append("  · ").append(source)}
+            val status=e.optInt("status",0);val source=e.optString("source","");val method=e.optString("method",if(isJsEvent(e))"JS" else source.uppercase(Locale.US));val whenText=if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"
+            top.text=buildString{append(whenText).append("  ");append(if(isJsEvent(e))"JS" else method);if(status>0)append("  ").append(status);if(e.has("duration"))append("  ").append(e.optLong("duration")).append(" ms");if(e.has("responseSize"))append("  ").append(e.optLong("responseSize")).append(" B");append("  · ").append(source)}
             top.setTextColor(if(status>=400||e.has("error"))bad else if(isJsEvent(e)||status in 200..399)accent else textColor)
             url.text=e.optString("url",e.optString("message","—"));url.setTextColor(muted);return row
         }
