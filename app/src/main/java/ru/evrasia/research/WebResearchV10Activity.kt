@@ -241,17 +241,22 @@ class WebResearchV10Activity : AppCompatActivity() {
 
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = false
+            override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                statsHandler.postDelayed({ ensureInstrumentation() }, 100)
+                statsHandler.postDelayed({ ensureInstrumentation() }, 350)
+            }
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
                 address.setText(url)
                 addRecord(JSONObject().put("source", "navigation").put("time", System.currentTimeMillis()).put("url", url).put("page", url).put("method", "GET"))
-                injectHooks(); capturePageSnapshot(); updateStats()
+                ensureInstrumentation(); capturePageSnapshot(); updateStats()
             }
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): android.webkit.WebResourceResponse? {
                 request?.let {
                     val url = it.url.toString(); val headers = HashMap(it.requestHeaders)
                     addRecord(JSONObject().put("source", "webview").put("time", System.currentTimeMillis()).put("method", it.method).put("url", url).put("headers", JSONObject(headers)))
-                    if (it.method.equals("GET", true) && (url.startsWith("http://") || url.startsWith("https://"))) captureResource(url, headers)
+                    if (it.method.equals("GET", true) && (url.startsWith("http://") || url.startsWith("https://")) && shouldAutoCopyResource(url, headers)) captureResource(url, headers, "auto-static")
                 }
                 return super.shouldInterceptRequest(view, request)
             }
@@ -345,6 +350,33 @@ class WebResearchV10Activity : AppCompatActivity() {
         return clean.endsWith(".js") || clean.endsWith(".mjs")
     }
 
+    private fun headerValue(headers: Map<String, String>, name: String): String =
+        headers.entries.firstOrNull { it.key.equals(name, true) }?.value.orEmpty()
+
+    private fun shouldAutoCopyResource(url: String, headers: Map<String, String>): Boolean {
+        val clean = url.substringBefore('#').substringBefore('?').lowercase(Locale.US)
+        val staticExt = listOf(".js", ".mjs", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf")
+        if (staticExt.any { clean.endsWith(it) }) return true
+        val destination = headerValue(headers, "Sec-Fetch-Dest").lowercase(Locale.US)
+        if (destination in setOf("script", "style", "image", "font")) return true
+        val accept = headerValue(headers, "Accept").lowercase(Locale.US)
+        return accept.contains("image/") || accept.contains("font/") || accept.contains("text/css") || accept.contains("javascript")
+    }
+
+    fun requestResourceCopy(url: String, headersJson: JSONObject?): Boolean {
+        if (!(url.startsWith("http://") || url.startsWith("https://"))) return false
+        val headers = linkedMapOf<String, String>()
+        if (headersJson != null) {
+            val keys = headersJson.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                headers[key] = headersJson.optString(key, "")
+            }
+        }
+        captureResource(url, headers, "manual-fallback")
+        return true
+    }
+
     private fun openConnection(url: String, headers: Map<String, String>): HttpURLConnection {
         val c = URL(url).openConnection() as HttpURLConnection
         c.instanceFollowRedirects = true; c.connectTimeout = 15000; c.readTimeout = 45000; c.requestMethod = "GET"
@@ -354,7 +386,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         return c
     }
 
-    private fun captureResource(url: String, headers: Map<String, String>) {
+    private fun captureResource(url: String, headers: Map<String, String>, copyMode: String) {
         if (archive.resources.containsKey(url) || !downloadingResources.add(url)) return
         Thread {
             try {
@@ -363,13 +395,13 @@ class WebResearchV10Activity : AppCompatActivity() {
                 val responseHeaders = JSONObject(); c.headerFields.filterKeys { it != null }.forEach { (k, v) -> responseHeaders.put(k, v.joinToString(", ")) }
                 val finalUrl = c.url.toString(); val contentType = c.contentType ?: ""
                 archive.resources[url] = bytes
-                archive.resourceMeta[url] = JSONObject().put("status", status).put("contentType", contentType).put("finalUrl", finalUrl).put("responseHeaders", responseHeaders)
+                archive.resourceMeta[url] = JSONObject().put("status", status).put("contentType", contentType).put("finalUrl", finalUrl).put("responseHeaders", responseHeaders).put("copyMode", copyMode)
                 if (looksLikeJs(url) || contentType.contains("javascript", true)) archive.scripts[url] = bytes
-                addRecord(JSONObject().put("source", "resource-copy").put("time", started).put("duration", System.currentTimeMillis() - started).put("method", "GET").put("url", url).put("status", status).put("responseHeaders", responseHeaders).put("mimeType", contentType).put("responseSize", bytes.size).put("redirectURL", if (finalUrl != url) finalUrl else ""))
+                addRecord(JSONObject().put("source", "resource-copy").put("copyMode", copyMode).put("time", started).put("duration", System.currentTimeMillis() - started).put("method", "GET").put("url", url).put("status", status).put("responseHeaders", responseHeaders).put("mimeType", contentType).put("responseSize", bytes.size).put("redirectURL", if (finalUrl != url) finalUrl else ""))
                 c.disconnect()
             } catch (e: Exception) {
-                archive.resourceMeta[url] = JSONObject().put("error", e.toString())
-                addRecord(JSONObject().put("source", "resource-copy").put("time", System.currentTimeMillis()).put("method", "GET").put("url", url).put("error", e.toString()))
+                archive.resourceMeta[url] = JSONObject().put("error", e.toString()).put("copyMode", copyMode)
+                addRecord(JSONObject().put("source", "resource-copy").put("copyMode", copyMode).put("time", System.currentTimeMillis()).put("method", "GET").put("url", url).put("error", e.toString()))
             } finally { downloadingResources.remove(url); runOnUiThread { updateBadge() } }
         }.start()
     }
@@ -387,11 +419,18 @@ class WebResearchV10Activity : AppCompatActivity() {
         }.start()
     }
 
-    private fun injectHooks() {
+    fun ensureInstrumentation() {
+        if (!::web.isInitialized) return
         val js = """
           (function(){
             if(window.__WR10)return; window.__WR10=true;
+            window.__WR_REQ_HINTS=window.__WR_REQ_HINTS||[];
             const send=o=>{try{EvrasiaResearch.record(JSON.stringify(o))}catch(e){}};
+            const absolute=u=>{try{return new URL(String(u||''),location.href).href}catch(e){return String(u||'')}};
+            const remember=(u,m,t)=>{try{let a=window.__WR_REQ_HINTS;a.push({url:absolute(u),method:String(m||'GET').toUpperCase(),time:t});if(a.length>300)a.splice(0,a.length-300)}catch(e){}};
+            const headersObject=h=>{let o={};try{new Headers(h||{}).forEach((v,k)=>o[k]=v)}catch(e){}return o};
+            const bodyPreview=b=>{try{if(b==null)return'';if(typeof b==='string')return b;if(b instanceof URLSearchParams)return b.toString();if(typeof FormData!=='undefined'&&b instanceof FormData)return JSON.stringify(Array.from(b.entries()).map(([k,v])=>[k,typeof v==='string'?v:'[File '+(v?.name||'')+' '+(v?.size||0)+' bytes]']));if(typeof Blob!=='undefined'&&b instanceof Blob)return '[Blob '+(b.type||'')+' '+b.size+' bytes]';if(typeof ArrayBuffer!=='undefined'&&b instanceof ArrayBuffer)return '[ArrayBuffer '+b.byteLength+' bytes]';if(ArrayBuffer.isView?.(b))return '[TypedArray '+b.byteLength+' bytes]';return String(b)}catch(e){return'[unavailable]'}};
+            const isTextual=ct=>!ct||/json|text|javascript|ecmascript|css|html|xml|x-www-form-urlencoded|graphql/.test(String(ct).toLowerCase());
             const chunk=(k,t,s)=>{t=String(t??'');let z=100000,n=Math.max(1,Math.ceil(t.length/z));for(let i=0;i<n;i++){try{s?EvrasiaResearch.scriptChunk(k,i,n,t.slice(i*z,(i+1)*z)):EvrasiaResearch.artifactChunk(k,i,n,t.slice(i*z,(i+1)*z))}catch(e){}}};
             const target=e=>{if(!e||e.nodeType!==1)return{};return{tag:(e.tagName||'').toLowerCase(),id:e.id||'',className:typeof e.className==='string'?e.className:'',name:e.name||'',type:e.type||'',role:e.getAttribute?.('role')||'',href:e.href||'',text:(e.innerText||e.textContent||'').trim().slice(0,300)}};
             ['click','change','submit'].forEach(type=>document.addEventListener(type,e=>send({source:'user-action',time:Date.now(),action:type,page:location.href,target:target(e.target)}),true));
@@ -400,10 +439,48 @@ class WebResearchV10Activity : AppCompatActivity() {
             history.replaceState=function(s,t,u){let r=HR(s,t,u);send({source:'history',time:Date.now(),action:'replaceState',url:location.href,state:s});return r};
             addEventListener('popstate',e=>send({source:'history',time:Date.now(),action:'popstate',url:location.href,state:e.state}));
             addEventListener('hashchange',e=>send({source:'history',time:Date.now(),action:'hashchange',url:location.href,oldURL:e.oldURL,newURL:e.newURL}));
-            const F=window.fetch; window.fetch=async function(i,n){let u=typeof i==='string'?i:(i&&i.url)||'',m=(n&&n.method)||(i&&i.method)||'GET',b=n&&n.body,t=Date.now();try{let r=await F.apply(this,arguments),c=r.clone(),x='';try{x=await c.text()}catch(e){}let h={};r.headers.forEach((v,k)=>h[k]=v);send({source:'fetch',time:t,duration:Date.now()-t,method:m,url:String(u),requestBody:b==null?'':String(b),status:r.status,statusText:r.statusText,responseHeaders:h,responseBody:x,mimeType:r.headers.get('content-type')||''});return r}catch(e){send({source:'fetch',time:t,method:m,url:String(u),error:String(e)});throw e}};
-            const O=XMLHttpRequest.prototype.open,S=XMLHttpRequest.prototype.send; XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=u;return O.apply(this,arguments)}; XMLHttpRequest.prototype.send=function(b){let x=this,t=Date.now();x.addEventListener('loadend',()=>send({source:'xhr',time:t,duration:Date.now()-t,method:x.__m||'GET',url:String(x.__u||''),requestBody:b==null?'':String(b),status:x.status,statusText:x.statusText,responseHeadersRaw:x.getAllResponseHeaders(),responseBody:(x.responseType===''||x.responseType==='text')?x.responseText:'[non-text response]'}));return S.apply(this,arguments)};
-            if(window.WebSocket){const W=window.WebSocket;window.WebSocket=class extends W{constructor(u,p){super(u,p);this.__u=String(u);send({source:'websocket-open',time:Date.now(),url:this.__u});this.addEventListener('message',e=>send({source:'websocket-receive',time:Date.now(),url:this.__u,data:typeof e.data==='string'?e.data:'[binary]'}))}send(d){send({source:'websocket-send',time:Date.now(),url:this.__u,data:typeof d==='string'?d:'[binary]'});return super.send(d)}}}
-            if(window.EventSource){const E=window.EventSource;window.EventSource=class extends E{constructor(u,o){super(u,o);this.__u=String(u);send({source:'sse-open',time:Date.now(),url:this.__u});this.addEventListener('message',e=>send({source:'sse-message',time:Date.now(),url:this.__u,data:e.data,lastEventId:e.lastEventId||''}))}}}
+
+            const F=window.fetch;
+            if(F&&!F.__wrUnified){
+              const wrapped=async function(i,n){
+                const u=absolute(typeof i==='string'?i:(i&&i.url)||'');
+                const m=String((n&&n.method)||(i&&i.method)||'GET').toUpperCase();
+                const t=Date.now();
+                let stack='';try{stack=(new Error()).stack||''}catch(e){}
+                const rqHeaders=headersObject((n&&n.headers)||(i&&i.headers)||{});
+                let body=bodyPreview(n&&n.body);
+                if(!body&&typeof Request!=='undefined'&&i instanceof Request){try{body=await i.clone().text()}catch(e){}}
+                remember(u,m,t);
+                try{
+                  const r=await F.apply(this,arguments);
+                  const rh={};try{r.headers.forEach((v,k)=>rh[k]=v)}catch(e){}
+                  const ct=(r.headers&&r.headers.get('content-type'))||'';
+                  let responseBody='';
+                  if(isTextual(ct)){try{responseBody=await r.clone().text()}catch(e){responseBody='[unavailable]'}}else responseBody='[binary]';
+                  let responseSize=-1;try{responseSize=new TextEncoder().encode(responseBody).length}catch(e){responseSize=responseBody.length}
+                  send({source:'fetch',time:t,duration:Date.now()-t,method:m,url:u,finalUrl:r.url||u,requestHeaders:rqHeaders,requestMimeType:rqHeaders['content-type']||'',requestBody:body,status:r.status,statusText:r.statusText,redirected:!!r.redirected,responseType:r.type||'',responseHeaders:rh,responseBody:responseBody,mimeType:ct,responseSize:responseSize,initiatorStack:stack});
+                  return r
+                }catch(e){send({source:'fetch',time:t,duration:Date.now()-t,method:m,url:u,requestHeaders:rqHeaders,requestMimeType:rqHeaders['content-type']||'',requestBody:body,initiatorStack:stack,error:String(e)});throw e}
+              };
+              wrapped.__wrUnified=true;window.fetch=wrapped;
+            }
+
+            try{
+              const XP=XMLHttpRequest.prototype, O=XP.open, S=XP.send, H=XP.setRequestHeader;
+              if(!XP.__wrUnified){
+                XP.__wrUnified=true;
+                XP.open=function(m,u){this.__wrMethod=String(m||'GET').toUpperCase();this.__wrUrl=absolute(u);this.__wrHeaders={};return O.apply(this,arguments)};
+                XP.setRequestHeader=function(k,v){try{this.__wrHeaders[String(k).toLowerCase()]=String(v)}catch(e){};return H.apply(this,arguments)};
+                XP.send=function(b){
+                  const x=this,t=Date.now(),m=x.__wrMethod||'GET',u=x.__wrUrl||'';let stack='';try{stack=(new Error()).stack||''}catch(e){};const body=bodyPreview(b);remember(u,m,t);
+                  x.addEventListener('loadend',()=>{let responseBody='[binary]';try{if(x.responseType===''||x.responseType==='text')responseBody=x.responseText}catch(e){};let ct='';try{ct=x.getResponseHeader('content-type')||''}catch(e){};send({source:'xhr',time:t,duration:Date.now()-t,method:m,url:u,finalUrl:x.responseURL||u,requestHeaders:x.__wrHeaders||{},requestMimeType:(x.__wrHeaders||{})['content-type']||'',requestBody:body,status:x.status,statusText:x.statusText,responseType:x.responseType||'',responseHeadersRaw:x.getAllResponseHeaders(),responseBody:responseBody,mimeType:ct,initiatorStack:stack})},{once:true});
+                  return S.apply(this,arguments)
+                };
+              }
+            }catch(e){}
+
+            if(window.WebSocket){const W=window.WebSocket;if(!W.__wrUnified){const Wrapped=class extends W{constructor(u,p){super(u,p);this.__u=String(u);send({source:'websocket-open',time:Date.now(),url:this.__u});this.addEventListener('message',e=>send({source:'websocket-receive',time:Date.now(),url:this.__u,data:typeof e.data==='string'?e.data:'[binary]'}))}send(d){send({source:'websocket-send',time:Date.now(),url:this.__u,data:typeof d==='string'?d:'[binary]'});return super.send(d)}};Wrapped.__wrUnified=true;window.WebSocket=Wrapped}}
+            if(window.EventSource){const E=window.EventSource;if(!E.__wrUnified){const Wrapped=class extends E{constructor(u,o){super(u,o);this.__u=String(u);send({source:'sse-open',time:Date.now(),url:this.__u});this.addEventListener('message',e=>send({source:'sse-message',time:Date.now(),url:this.__u,data:e.data,lastEventId:e.lastEventId||''}))}};Wrapped.__wrUnified=true;window.EventSource=Wrapped}}
             const scan=()=>Array.from(document.scripts).forEach((s,i)=>{if(s.src)EvrasiaResearch.externalScript(String(s.src));else if(s.textContent)chunk(location.href+'#inline-'+i,s.textContent,true)}); scan();
             new MutationObserver(ms=>{let data=ms.slice(0,100).map(m=>({type:m.type,target:target(m.target),added:m.addedNodes?.length||0,removed:m.removedNodes?.length||0,attribute:m.attributeName||''}));send({source:'dom-mutation',time:Date.now(),page:location.href,mutations:data});scan()}).observe(document.documentElement,{subtree:true,childList:true,attributes:true});
             addEventListener('error',e=>send({source:'js-error',time:Date.now(),message:e.message,url:e.filename||location.href,line:e.lineno||0,column:e.colno||0}));
