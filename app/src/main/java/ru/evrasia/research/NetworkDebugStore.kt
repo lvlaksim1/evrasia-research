@@ -2,6 +2,7 @@ package ru.evrasia.research
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicLong
 
 object NetworkDebugStore {
@@ -9,6 +10,7 @@ object NetworkDebugStore {
     private val events = mutableListOf<JSONObject>()
     private val revision = AtomicLong(0)
     private const val MAX_EVENTS = 10000
+    private const val DEDUP_WINDOW = 32
 
     private val networkSources = setOf(
         "webview", "fetch", "xhr", "resource-copy", "navigation", "new-window",
@@ -31,13 +33,35 @@ object NetworkDebugStore {
     }
 
     @Synchronized fun snapshot(): List<JSONObject> {
-        val out = mutableListOf<JSONObject>()
-        val seen = HashSet<String>()
+        val out = ArrayList<JSONObject>(events.size)
+        val recentQueue = ArrayDeque<String>(DEDUP_WINDOW)
+        val recentSet = HashSet<String>(DEDUP_WINDOW * 2)
+
         events.forEach { event ->
-            val fingerprint = event.toString()
-            if (seen.add(fingerprint)) out.add(JSONObject(fingerprint))
+            val fingerprint = displayFingerprint(event)
+            if (recentSet.add(fingerprint)) {
+                out.add(JSONObject(event.toString()))
+                recentQueue.addLast(fingerprint)
+                if (recentQueue.size > DEDUP_WINDOW) {
+                    recentSet.remove(recentQueue.removeFirst())
+                }
+            }
         }
         return out
+    }
+
+    private fun displayFingerprint(event: JSONObject): String = buildString(192) {
+        append(event.optString("source", "")); append('\u0001')
+        append(event.optLong("time", Long.MIN_VALUE)); append('\u0001')
+        append(event.optString("method", "")); append('\u0001')
+        append(event.optString("url", "")); append('\u0001')
+        append(event.optInt("status", Int.MIN_VALUE)); append('\u0001')
+        append(event.optString("data", "")); append('\u0001')
+        append(event.optString("message", "")); append('\u0001')
+        append(event.optString("requestBody", "")); append('\u0001')
+        append(event.optString("responseBody", "")); append('\u0001')
+        append(event.optLong("responseSize", Long.MIN_VALUE)); append('\u0001')
+        append(event.optLong("duration", Long.MIN_VALUE))
     }
 
     @Synchronized fun json(): JSONArray {
