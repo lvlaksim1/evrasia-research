@@ -16,11 +16,7 @@ object NetworkRequestActions {
 
     fun prepareFullExport(activity: Activity) {
         val browser = activeBrowser(activity) ?: return
-        try {
-            val method = WebResearchV10Activity::class.java.getDeclaredMethod("capturePageSnapshot")
-            method.isAccessible = true
-            method.invoke(browser)
-        } catch (_: Exception) {}
+        browser.captureResearchSnapshot()
     }
 
     fun writeFullExport(activity: Activity, output: OutputStream): Boolean {
@@ -209,39 +205,13 @@ object NetworkRequestActions {
         return prefix + "\n\n[truncated in trace: ${bytes.size - MAX_TEXT_BODY} bytes remain; full bytes are kept in ZIP]"
     }
 
-    private fun activeBrowser(activity: Activity): WebResearchV10Activity? {
-        val app = activity.application as? WebResearchApp ?: return null
-        return try {
-            val field = WebResearchApp::class.java.getDeclaredField("browserRef")
-            field.isAccessible = true
-            val ref = field.get(app) as? WeakReference<*>
-            ref?.get() as? WebResearchV10Activity
-        } catch (_: Exception) {
-            null
-        }
-    }
+    private fun activeBrowser(activity: Activity): WebResearchV10Activity? =
+        (activity.application as? WebResearchApp)?.activeBrowserActivity()
 
-    private fun archiveOf(browser: WebResearchV10Activity): ResearchArchive? = try {
-        val field = WebResearchV10Activity::class.java.getDeclaredField("archive")
-        field.isAccessible = true
-        field.get(browser) as? ResearchArchive
-    } catch (_: Exception) {
-        null
-    }
+    private fun archiveOf(browser: WebResearchV10Activity): ResearchArchive? = browser.researchArchive()
 
-    private fun currentUrl(browser: WebResearchV10Activity): String = try {
-        val field = WebResearchV10Activity::class.java.getDeclaredField("web")
-        field.isAccessible = true
-        (field.get(browser) as? WebView)?.url.orEmpty()
-    } catch (_: Exception) {
-        ""
-    }
+    private fun currentUrl(browser: WebResearchV10Activity): String = browser.researchWebView()?.url.orEmpty()
 
-    private fun browserUserAgent(browser: WebResearchV10Activity?): String = if (browser == null) "" else try {
-        val field = WebResearchV10Activity::class.java.getDeclaredField("userAgent")
-        field.isAccessible = true
-        field.get(browser)?.toString().orEmpty()
-    } catch (_: Exception) {
-        ""
-    }
+    private fun browserUserAgent(browser: WebResearchV10Activity?): String = browser?.researchUserAgent().orEmpty()
+
 }

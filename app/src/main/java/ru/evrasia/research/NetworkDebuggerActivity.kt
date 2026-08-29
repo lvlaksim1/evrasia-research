@@ -865,10 +865,10 @@ class NetworkDebuggerActivity : AppCompatActivity() {
                 else->source.uppercase(Locale.US)
             }
             val data=e.optString("data",e.optString("message",e.optString("state","")))
-            val line="${if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"}  $direction${if(data.isNotBlank())"\n$data" else ""}"
-            copyText.append(line).append("\n\n")
+            val displayLine="${if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"}  $direction${if(data.isNotBlank())"\n$data" else ""}"
+            copyText.append(displayLine).append("\n\n")
             root.addView(TextView(this).apply{
-                text=line;setTextColor(if(direction=="SEND")amber else if(direction=="RECEIVE")accent else muted);textSize=10.5f;typeface=Typeface.MONOSPACE;setTextIsSelectable(true);setPadding(dp(9),dp(8),dp(9),dp(8));background=rounded(panel2,9f,line)
+                text=displayLine;setTextColor(if(direction=="SEND")amber else if(direction=="RECEIVE")accent else muted);textSize=10.5f;typeface=Typeface.MONOSPACE;setTextIsSelectable(true);setPadding(dp(9),dp(8),dp(9),dp(8));background=rounded(panel2,9f,line)
             },LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(4),0,dp(4))})
         }
         val scroll=ScrollView(this).apply{addView(root)}
@@ -1007,10 +1007,13 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         val scroll=ScrollView(this).apply{setBackgroundColor(bg);addView(content)}
         root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
         dialog=AlertDialog.Builder(this).setView(root).create()
-        dialog.setOnShowListener{
-            val dm=resources.displayMetrics
-            dialog.window?.setLayout((dm.widthPixels*0.97).toInt(),(dm.heightPixels*0.92).toInt())
-            dialog.window?.setBackgroundDrawable(rounded(bg,18f,line))
+        val dm=resources.displayMetrics
+        dialog.window?.apply{
+            setBackgroundDrawable(rounded(bg,18f,line))
+            attributes=attributes.apply{
+                width=(dm.widthPixels*0.97).toInt()
+                height=(dm.heightPixels*0.92).toInt()
+            }
         }
         dialog.show()
     }

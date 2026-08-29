@@ -53,17 +53,9 @@ class CookieTraceV48UiProvider : ContentProvider(), Application.ActivityLifecycl
         return true
     }
 
-    private fun webOf(activity: WebResearchV10Activity): WebView? = try {
-        val f = WebResearchV10Activity::class.java.getDeclaredField("web")
-        f.isAccessible = true
-        f.get(activity) as? WebView
-    } catch (_: Exception) { null }
+    private fun webOf(activity: WebResearchV10Activity): WebView? = activity.researchWebView()
 
-    private fun archiveOf(activity: WebResearchV10Activity): ResearchArchive? = try {
-        val f = WebResearchV10Activity::class.java.getDeclaredField("archive")
-        f.isAccessible = true
-        f.get(activity) as? ResearchArchive
-    } catch (_: Exception) { null }
+    private fun archiveOf(activity: WebResearchV10Activity): ResearchArchive? = activity.researchArchive()
 
     private fun currentPage(): String {
         val browser = browserRef.get() ?: return ""

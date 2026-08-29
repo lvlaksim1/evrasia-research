@@ -14,7 +14,6 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
-import android.webkit.WebView
 import android.widget.*
 import java.lang.ref.WeakReference
 
@@ -29,11 +28,12 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
     private val ticker=object:Runnable{override fun run(){syncNetworkStore();advancedTick++;browserRef.get()?.let{if(advancedTick%5==0){it.ensureInstrumentation();installAdvancedCapture(it)}};handler.postDelayed(this,1000)}}
     override fun onCreate(){super.onCreate();registerActivityLifecycleCallbacks(this);handler.post(ticker)}
 
+    internal fun activeBrowserActivity(): WebResearchV10Activity? = browserRef.get()
+
     fun syncNetworkStore(){
         val browser=browserRef.get()?:return
         try{
-            val f=WebResearchV10Activity::class.java.getDeclaredField("archive");f.isAccessible=true
-            val a=f.get(browser) as? ResearchArchive?:return
+            val a=browser.researchArchive()
             synchronized(a){
                 val n=a.records.length()
                 if(n<mirroredCount){
@@ -52,8 +52,7 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
     fun currentCookiesText():String{
         val browser=browserRef.get()?:return "Браузер не открыт"
         return try{
-            val f=WebResearchV10Activity::class.java.getDeclaredField("web");f.isAccessible=true
-            val w=f.get(browser) as? WebView
+            val w=browser.researchWebView()
             val page=w?.url.orEmpty()
             val raw=if(page.isBlank())"" else CookieManager.getInstance().getCookie(page).orEmpty()
             val cookies=raw.split(';').map{it.trim()}.filter{it.isNotBlank()}
@@ -70,8 +69,7 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
 
     private fun installAdvancedCapture(a:WebResearchV10Activity){
         try{
-            val f=WebResearchV10Activity::class.java.getDeclaredField("web");f.isAccessible=true
-            val w=f.get(a) as? WebView?:return
+            val w=a.researchWebView()?:return
             val js="""
                 (function(){
                   if(window.__WR_PERF)return;window.__WR_PERF=true;

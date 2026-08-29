@@ -48,6 +48,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class WebResearchV10Activity : AppCompatActivity() {
+    internal fun researchWebView(): WebView? = if (::web.isInitialized) web else null
+    internal fun researchArchive(): ResearchArchive = archive
+    internal fun researchUserAgent(): String = if (::userAgent.isInitialized) userAgent else ""
+    internal fun captureResearchSnapshot() = capturePageSnapshot()
+
     private lateinit var web: WebView
     private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var address: EditText
