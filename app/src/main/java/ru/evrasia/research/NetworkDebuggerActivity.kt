@@ -1,6 +1,9 @@
 package ru.evrasia.research
 
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -11,10 +14,8 @@ import android.os.Handler
 import android.os.Looper
 import android.text.Spannable
 import android.text.SpannableString
-import android.text.SpannableStringBuilder
 import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
-import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -69,6 +70,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private lateinit var jsButton: Button
     private lateinit var mergeButton: Button
     private lateinit var domainSpinner: Spinner
+    private lateinit var typeSpinner: Spinner
     private lateinit var search: EditText
     private val allItems = mutableListOf<JSONObject>()
     private val items = mutableListOf<JSONObject>()
@@ -84,6 +86,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private val displayMergeSources = setOf("webview","resource-copy","resource-timing","fetch","fetch-meta","xhr","xhr-meta")
     private val displaySourceOrder = listOf("webview","fetch","fetch-meta","xhr","xhr-meta","resource-timing","resource-copy")
     private val displayMergeWindowMs = 1200L
+    private val typeFilters = listOf("ALL","JSON","HTML","JS","CSS","IMG","PDF","TEXT","BIN","OTHER")
 
     private val refresh = object : Runnable {
         override fun run() {
@@ -117,13 +120,24 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
         val filterRow = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(8),dp(6),dp(8),dp(4)) }
         domainSpinner = Spinner(this)
-        filterRow.addView(domainSpinner, LinearLayout.LayoutParams(dp(150),dp(42)))
+        filterRow.addView(domainSpinner, LinearLayout.LayoutParams(dp(120),dp(42)))
+        typeSpinner = Spinner(this)
+        typeSpinner.adapter = object:ArrayAdapter<String>(this,android.R.layout.simple_spinner_item,typeFilters){
+            private fun v(p:Int)=TextView(this@NetworkDebuggerActivity).apply{text=getItem(p);setTextColor(textColor);textSize=11f;gravity=Gravity.CENTER;setPadding(dp(6),0,dp(6),0);background=rounded(panel2,10f,Color.rgb(50,76,65))}
+            override fun getView(p:Int,c:View?,parent:ViewGroup)=v(p)
+            override fun getDropDownView(p:Int,c:View?,parent:ViewGroup)=v(p).apply{setPadding(dp(10),dp(10),dp(10),dp(10));background=rounded(bg,0f)}
+        }
+        typeSpinner.setOnItemSelectedListener(object:android.widget.AdapterView.OnItemSelectedListener{
+            override fun onItemSelected(parent:android.widget.AdapterView<*>?,view:View?,position:Int,id:Long){applyFilters()}
+            override fun onNothingSelected(parent:android.widget.AdapterView<*>?){ }
+        })
+        filterRow.addView(typeSpinner, LinearLayout.LayoutParams(dp(78),dp(42)).apply { marginStart=dp(5) })
         search = EditText(this).apply {
-            hint="Поиск по всем данным"; setHintTextColor(muted); setTextColor(textColor); textSize=12f; setSingleLine(true); imeOptions=EditorInfo.IME_ACTION_SEARCH
+            hint="Поиск"; setHintTextColor(muted); setTextColor(textColor); textSize=12f; setSingleLine(true); imeOptions=EditorInfo.IME_ACTION_SEARCH
             background=rounded(panel2,11f,Color.rgb(50,76,65)); setPadding(dp(10),0,dp(10),0)
             setOnEditorActionListener { _, id, _ -> if(id==EditorInfo.IME_ACTION_SEARCH){ applyFilters(); true } else false }
         }
-        filterRow.addView(search, LinearLayout.LayoutParams(0,dp(42),1f).apply { marginStart=dp(6) })
+        filterRow.addView(search, LinearLayout.LayoutParams(0,dp(42),1f).apply { marginStart=dp(5) })
         filterRow.addView(compactButton("⌕") { applyFilters() }, LinearLayout.LayoutParams(dp(44),dp(42)).apply { marginStart=dp(5) })
         root.addView(filterRow)
 
@@ -172,14 +186,16 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
     private fun applyFilters(){
         val domain=if(::domainSpinner.isInitialized && domainSpinner.selectedItem!=null) domainSpinner.selectedItem.toString() else "Все домены"
+        val type=if(::typeSpinner.isInitialized && typeSpinner.selectedItem!=null) typeSpinner.selectedItem.toString() else "ALL"
         val q=if(::search.isInitialized) search.text.toString().trim() else ""
         val displayItems=if(mergeMode) mergeForDisplay(allItems) else allItems
         items.clear()
         displayItems.filterTo(items){ e ->
             val domainOk = domain=="Все домены" || hostOf(e.optString("url",""))==domain
             val jsOk = !jsOnly || isJsEvent(e)
+            val typeOk = type=="ALL" || responseKind(e)==type
             val searchOk = q.isBlank() || e.toString().contains(q,true)
-            domainOk && jsOk && searchOk
+            domainOk && jsOk && typeOk && searchOk
         }
         if(::adapter.isInitialized) adapter.notifyDataSetChanged()
         if(::counter.isInitialized){
@@ -188,7 +204,8 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             val resources=allItems.count{it.optString("source")=="resource-copy" || it.optString("source")=="webview"}
             val errors=allItems.count{it.has("error")||it.optInt("status",0)>=400}
             val prefix=if(mergeMode) "${allItems.size} событий → ${displayItems.size} строк" else "${allItems.size} событий"
-            counter.text="$prefix · $requests запросов · $js JS · $resources ресурсов · $errors ошибок${if(q.isNotBlank()) " · найдено ${items.size}" else ""}"
+            val filtered=if(q.isNotBlank()||type!="ALL"||domain!="Все домены"||jsOnly)" · показано ${items.size}" else ""
+            counter.text="$prefix · $requests запросов · $js JS · $resources ресурсов · $errors ошибок$filtered"
         }
     }
 
@@ -255,6 +272,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     }
 
     private fun displaySource(event:JSONObject)=event.optString("_displaySources",event.optString("source",""))
+    private fun sourceSummary(event:JSONObject):String{val sources=eventSources(event);return if(mergeMode&&sources.size>1)"${sources.size} src" else displaySource(event)}
 
     private fun mergeDisplayInto(target:JSONObject,incoming:JSONObject){
         val targetSnapshot=JSONObject(target.toString()).apply{remove("_mergedEvents");remove("_displaySources")}
@@ -297,6 +315,48 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private fun meaningful(value:Any?):Boolean=when(value){null,JSONObject.NULL->false;is String->value.isNotBlank()&&value!="—";is Number->value.toDouble()!=0.0;else->true}
     private fun betterNumeric(current:Any?,incoming:Any?):Boolean=current is Number&&incoming is Number&&current.toDouble()==0.0&&incoming.toDouble()!=0.0
 
+    private fun responseKind(event:JSONObject):String{
+        if(event.optString("source","") in setOf("js-file","script-archive","source-map"))return "JS"
+        val headers=event.optJSONObject("responseHeaders")
+        val mime=event.optString("mimeType",headerValue(headers,"Content-Type")).substringBefore(';').trim().lowercase(Locale.US)
+        when{
+            mime.contains("json") -> return "JSON"
+            mime.contains("html") -> return "HTML"
+            mime.contains("javascript")||mime.contains("ecmascript") -> return "JS"
+            mime.contains("css") -> return "CSS"
+            mime.startsWith("image/") -> return "IMG"
+            mime.contains("pdf") -> return "PDF"
+            mime.startsWith("text/")||mime.contains("xml")||mime.contains("x-www-form-urlencoded") -> return "TEXT"
+            mime.contains("octet-stream")||mime.startsWith("font/")||mime.startsWith("audio/")||mime.startsWith("video/")||mime.contains("zip")||mime.contains("gzip") -> return "BIN"
+        }
+        val path=event.optString("url","").substringBefore('?').substringBefore('#').lowercase(Locale.US)
+        when{
+            path.endsWith(".json")||path.endsWith(".map") -> return "JSON"
+            path.endsWith(".html")||path.endsWith(".htm") -> return "HTML"
+            path.endsWith(".js")||path.endsWith(".mjs") -> return "JS"
+            path.endsWith(".css") -> return "CSS"
+            path.endsWith(".png")||path.endsWith(".jpg")||path.endsWith(".jpeg")||path.endsWith(".gif")||path.endsWith(".webp")||path.endsWith(".svg")||path.endsWith(".ico") -> return "IMG"
+            path.endsWith(".pdf") -> return "PDF"
+            path.endsWith(".txt")||path.endsWith(".xml")||path.endsWith(".csv") -> return "TEXT"
+            path.endsWith(".woff")||path.endsWith(".woff2")||path.endsWith(".ttf")||path.endsWith(".otf")||path.endsWith(".zip")||path.endsWith(".gz")||path.endsWith(".mp4")||path.endsWith(".webm")||path.endsWith(".mp3") -> return "BIN"
+        }
+        val body=event.optString("responseBody",event.optString("data","")).trim()
+        if(body=="[binary]"||body=="[non-text response]")return "BIN"
+        if(body.startsWith("{")||body.startsWith("["))return "JSON"
+        if(body.startsWith("<!doctype",true)||body.startsWith("<html",true)||body.startsWith("<body",true))return "HTML"
+        if(body.isNotBlank())return "TEXT"
+        return if(mime.isNotBlank())"BIN" else "OTHER"
+    }
+
+    private fun hasRequestBody(event:JSONObject)=event.optString("requestBody","").isNotBlank()
+    private fun isCached(event:JSONObject):Boolean{
+        val cache=event.optString("cache","")
+        if(cache.isNotBlank()&&!cache.equals("network",true))return true
+        return event.has("transferSize")&&event.optLong("transferSize",-1L)==0L&&event.optLong("decodedBodySize",0L)>0L
+    }
+    private fun isRedirect(event:JSONObject):Boolean=event.optBoolean("redirected",false)||event.optString("redirectURL","").isNotBlank()||event.optInt("status",0) in 300..399
+    private fun rowFlags(event:JSONObject):String=buildList{if(hasRequestBody(event))add("BODY");if(isCached(event))add("CACHE");if(isRedirect(event))add("REDIRECT")}.joinToString(" ")
+
     private fun isRequestEvent(e:JSONObject)=e.optString("source") in setOf("fetch","fetch-meta","xhr","xhr-meta","webview","resource-copy","resource-timing","navigation","navigation-timing","new-window","websocket-open","websocket-send","websocket-receive","sse-open","sse-message","beacon","js-file","script-archive")
     private fun isJsEvent(e:JSONObject):Boolean { val u=e.optString("url","").substringBefore('?').lowercase(Locale.US); return e.optString("source") in setOf("js-file","script-archive","source-map") || u.endsWith(".js") || u.endsWith(".mjs") || e.optString("mimeType","").contains("javascript",true) }
     private fun hostOf(url:String):String?=try { if(url.startsWith("http://")||url.startsWith("https://")) URL(url).host else null } catch(_:Exception){null}
@@ -317,10 +377,16 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         var decoded=false
 
         val content=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setBackgroundColor(bg);setPadding(dp(10),dp(8),dp(10),dp(14))}
+        val actions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL}
+        actions.addView(compactButton("Копировать URL"){copyText("URL",url)},LinearLayout.LayoutParams(0,dp(40),1f).apply{marginEnd=dp(4)})
+        actions.addView(compactButton("Копировать cURL"){copyText("cURL",buildCurl(event))},LinearLayout.LayoutParams(0,dp(40),1f).apply{marginStart=dp(4)})
+        content.addView(actions,LinearLayout.LayoutParams(-1,dp(40)).apply{setMargins(0,0,0,dp(6))})
         val decodeButton=compactButton("URL-ДЕКОДИРОВАТЬ") {}
         content.addView(decodeButton,LinearLayout.LayoutParams(-1,dp(40)).apply{setMargins(0,0,0,dp(4))})
         addSection(content,"REQUEST",highlightPlain(requestText,query))
         addSection(content,"RESPONSE",highlightPlain(responseText,query))
+        val sources=eventSources(event)
+        if(sources.size>1)addSection(content,"SOURCES",highlightPlain(orderedSourceLabel(sources),query))
 
         addSectionTitle(content,"RESPONSE BODY")
         if(binary){
@@ -367,6 +433,22 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("Детали запроса").setView(sv).setPositiveButton("Закрыть",null).show()
     }
 
+    private fun copyText(label:String,value:String){
+        val manager=getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        manager.setPrimaryClip(ClipData.newPlainText(label,value))
+        Toast.makeText(this,"$label скопирован",Toast.LENGTH_SHORT).show()
+    }
+
+    private fun shellQuote(value:String)="'"+value.replace("'","'\"'\"'")+"'"
+    private fun buildCurl(event:JSONObject):String=buildString{
+        val method=event.optString("method","GET").ifBlank{"GET"}.uppercase(Locale.US)
+        append("curl -X ").append(shellQuote(method)).append(" ").append(shellQuote(event.optString("url","")))
+        val headers=event.optJSONObject("requestHeaders")?:event.optJSONObject("headers")
+        if(headers!=null){val keys=headers.keys();while(keys.hasNext()){val key=keys.next();append(" \\\n  -H ").append(shellQuote("$key: ${headers.optString(key,"")}"))}}
+        val body=event.optString("requestBody","")
+        if(body.isNotBlank())append(" \\\n  --data-raw ").append(shellQuote(body))
+    }
+
     private fun captureDisplayTexts(view:View, originals:MutableMap<TextView,CharSequence>, skip:View){
         when{
             view===skip -> Unit
@@ -409,6 +491,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
     private fun buildResponseText(event:JSONObject,cookies:String)=buildString{
         if(event.has("status"))append("Status: ").append(event.optInt("status")).append(' ').append(event.optString("statusText","")).append('\n')
+        append("Content type: ").append(responseKind(event)).append('\n')
         appendField(this,event,"finalUrl","Final URL")
         appendField(this,event,"redirectURL","Redirect URL")
         appendField(this,event,"redirected","Redirected")
@@ -576,11 +659,20 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         override fun getItemId(position:Int)=position.toLong()
         override fun getView(position:Int,convertView:View?,parent:ViewGroup?):View{
             val e=getItem(position)
-            val row=(convertView as? LinearLayout)?:LinearLayout(this@NetworkDebuggerActivity).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(10),dp(7),dp(10),dp(7));background=rounded(panel,0f,Color.rgb(26,48,39));addView(TextView(this@NetworkDebuggerActivity).apply{tag="top";textSize=12f;typeface=Typeface.DEFAULT_BOLD});addView(TextView(this@NetworkDebuggerActivity).apply{tag="url";textSize=11f;maxLines=2;setPadding(0,dp(2),0,0)})}
-            val top=row.findViewWithTag<TextView>("top");val url=row.findViewWithTag<TextView>("url")
-            val status=e.optInt("status",0);val source=displaySource(e);val method=e.optString("method",if(isJsEvent(e))"JS" else source.uppercase(Locale.US));val whenText=if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"
-            top.text=buildString{append(whenText).append("  ");append(if(isJsEvent(e))"JS" else method);if(status>0)append("  ").append(status);if(e.has("duration"))append("  ").append(e.optLong("duration")).append(" ms");if(e.has("responseSize"))append("  ").append(e.optLong("responseSize")).append(" B");append("  · ").append(source)}
+            val row=(convertView as? LinearLayout)?.takeIf{it.findViewWithTag<TextView>("top")!=null}?:LinearLayout(this@NetworkDebuggerActivity).apply{
+                orientation=LinearLayout.VERTICAL;setPadding(dp(10),dp(7),dp(10),dp(7));background=rounded(panel,0f,Color.rgb(26,48,39))
+                addView(LinearLayout(this@NetworkDebuggerActivity).apply{
+                    orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL
+                    addView(TextView(this@NetworkDebuggerActivity).apply{tag="top";textSize=12f;typeface=Typeface.DEFAULT_BOLD;maxLines=2},LinearLayout.LayoutParams(0,-2,1f))
+                    addView(TextView(this@NetworkDebuggerActivity).apply{tag="kind";textSize=10f;typeface=Typeface.DEFAULT_BOLD;gravity=Gravity.CENTER;setPadding(dp(7),dp(3),dp(7),dp(3));background=rounded(panel2,7f,Color.rgb(50,76,65))},LinearLayout.LayoutParams(-2,-2).apply{marginStart=dp(8)})
+                })
+                addView(TextView(this@NetworkDebuggerActivity).apply{tag="url";textSize=11f;maxLines=2;setPadding(0,dp(2),0,0)})
+            }
+            val top=row.findViewWithTag<TextView>("top");val url=row.findViewWithTag<TextView>("url");val kind=row.findViewWithTag<TextView>("kind")
+            val status=e.optInt("status",0);val source=sourceSummary(e);val method=e.optString("method",if(isJsEvent(e))"JS" else e.optString("source","").uppercase(Locale.US));val whenText=if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---";val flags=rowFlags(e)
+            top.text=buildString{append(whenText).append("  ");append(if(isJsEvent(e))"JS" else method);if(status>0)append("  ").append(status);if(e.has("duration"))append("  ").append(e.optLong("duration")).append(" ms");if(e.has("responseSize"))append("  ").append(e.optLong("responseSize")).append(" B");append("  · ").append(source);if(flags.isNotBlank())append("  ").append(flags)}
             top.setTextColor(if(status>=400||e.has("error"))bad else if(isJsEvent(e)||status in 200..399)accent else textColor)
+            kind.text=responseKind(e);kind.setTextColor(if(kind.text=="OTHER")muted else cyan)
             url.text=e.optString("url",e.optString("message","—"));url.setTextColor(muted);return row
         }
     }
