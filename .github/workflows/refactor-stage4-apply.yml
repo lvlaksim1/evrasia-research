@@ -32,7 +32,7 @@ jobs:
             echo "Display merger implementation still embedded in activity"
             exit 1
           fi
-      - name: Build APK
+      - name: Build APK after decomposition
         env:
           WEB_RESEARCH_VERSION: v54-refactor-check
         run: gradle :app:assembleDebug
