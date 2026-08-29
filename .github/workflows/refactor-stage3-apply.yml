@@ -37,10 +37,15 @@ jobs:
           replace_once(
               activity,
               'class WebResearchV10Activity : AppCompatActivity() {\n    private lateinit var web: WebView',
-              'class WebResearchV10Activity : AppCompatActivity() {\n    internal fun researchWebView(): WebView? = if (::web.isInitialized) web else null\n    internal fun researchArchive(): ResearchArchive = archive\n\n    private lateinit var web: WebView'
+              'class WebResearchV10Activity : AppCompatActivity() {\n    internal fun researchWebView(): WebView? = if (::web.isInitialized) web else null\n    internal fun researchArchive(): ResearchArchive = archive\n    internal fun researchUserAgent(): String = if (::userAgent.isInitialized) userAgent else ""\n    internal fun captureResearchSnapshot() = capturePageSnapshot()\n\n    private lateinit var web: WebView'
           )
 
           app = 'app/src/main/java/ru/evrasia/research/WebResearchApp.kt'
+          replace_once(
+              app,
+              '    override fun onCreate(){super.onCreate();registerActivityLifecycleCallbacks(this);handler.post(ticker)}\n',
+              '    override fun onCreate(){super.onCreate();registerActivityLifecycleCallbacks(this);handler.post(ticker)}\n\n    internal fun activeBrowserActivity(): WebResearchV10Activity? = browserRef.get()\n'
+          )
           replace_once(
               app,
               '            val f=WebResearchV10Activity::class.java.getDeclaredField("archive");f.isAccessible=true\n            val a=f.get(browser) as? ResearchArchive?:return',
@@ -75,6 +80,27 @@ jobs:
               )
               p.write_text(s[:start] + replacement + s[archive_end:])
 
+          actions = 'app/src/main/java/ru/evrasia/research/NetworkRequestActions.kt'
+          replace_once(
+              actions,
+              '    fun prepareFullExport(activity: Activity) {\n        val browser = activeBrowser(activity) ?: return\n        try {\n            val method = WebResearchV10Activity::class.java.getDeclaredMethod("capturePageSnapshot")\n            method.isAccessible = true\n            method.invoke(browser)\n        } catch (_: Exception) {}\n    }',
+              '    fun prepareFullExport(activity: Activity) {\n        val browser = activeBrowser(activity) ?: return\n        browser.captureResearchSnapshot()\n    }'
+          )
+          p = Path(actions)
+          s = p.read_text()
+          start = s.index('    private fun activeBrowser(activity: Activity): WebResearchV10Activity? {')
+          end = s.index('\n}', start)
+          replacement = '''    private fun activeBrowser(activity: Activity): WebResearchV10Activity? =
+        (activity.application as? WebResearchApp)?.activeBrowserActivity()
+
+    private fun archiveOf(browser: WebResearchV10Activity): ResearchArchive? = browser.researchArchive()
+
+    private fun currentUrl(browser: WebResearchV10Activity): String = browser.researchWebView()?.url.orEmpty()
+
+    private fun browserUserAgent(browser: WebResearchV10Activity?): String = browser?.researchUserAgent().orEmpty()
+'''
+          p.write_text(s[:start] + replacement + s[end:])
+
           debugger = 'app/src/main/java/ru/evrasia/research/NetworkDebuggerActivity.kt'
           replace_once(
               debugger,
@@ -99,15 +125,19 @@ jobs:
           if compat.exists():
               compat.unlink()
           PY
-      - name: Verify no reflection coupling remains
+      - name: Verify structural cleanup
         shell: bash
         run: |
-          if grep -R "getDeclaredField(\"web\"\|getDeclaredField(\"archive\"" -n app/src/main/java/ru/evrasia/research; then
+          if grep -R "getDeclaredField\|getDeclaredMethod" -n app/src/main/java/ru/evrasia/research; then
             echo "Reflection coupling still present"
             exit 1
           fi
           if grep -q "Prepare request detail geometry" .github/workflows/android-apk.yml; then
             echo "Build-time source patch still present"
+            exit 1
+          fi
+          if [ -e app/src/main/java/ru/evrasia/research/NetworkDebuggerCompat.kt ]; then
+            echo "Obsolete debugger compatibility file still present"
             exit 1
           fi
       - name: Build APK
@@ -119,6 +149,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/src/main/java/ru/evrasia/research .github/workflows/android-apk.yml
+          git add -A app/src/main/java/ru/evrasia/research .github/workflows/android-apk.yml
           git commit -m "refactor: remove reflection and build-time source patches [stage3-applied]"
           git push origin HEAD:refactor-stage3-v53
