@@ -197,7 +197,7 @@ class WebResearchV10Activity : AppCompatActivity() {
                 web.reload()
                 statsHandler.postDelayed({ if (::swipeRefresh.isInitialized) swipeRefresh.isRefreshing = false }, 15000)
             }
-            addView(web, SwipeRefreshLayout.LayoutParams(-1, -1))
+            addView(web, android.view.ViewGroup.LayoutParams(-1, -1))
         }
         root.addView(swipeRefresh, LinearLayout.LayoutParams(-1, 0, 1f))
 
@@ -449,7 +449,7 @@ class WebResearchV10Activity : AppCompatActivity() {
             const bodyPreview=b=>{try{if(b==null)return'';if(typeof b==='string')return b;if(b instanceof URLSearchParams)return b.toString();if(typeof FormData!=='undefined'&&b instanceof FormData)return JSON.stringify(Array.from(b.entries()).map(([k,v])=>[k,typeof v==='string'?v:'[File '+(v?.name||'')+' '+(v?.size||0)+' bytes]']));if(typeof Blob!=='undefined'&&b instanceof Blob)return '[Blob '+(b.type||'')+' '+b.size+' bytes]';if(typeof ArrayBuffer!=='undefined'&&b instanceof ArrayBuffer)return '[ArrayBuffer '+b.byteLength+' bytes]';if(ArrayBuffer.isView?.(b))return '[TypedArray '+b.byteLength+' bytes]';return String(b)}catch(e){return'[unavailable]'}};
             const isTextual=ct=>!ct||/json|text|javascript|ecmascript|css|html|xml|x-www-form-urlencoded|graphql/.test(String(ct).toLowerCase());
             const chunk=(k,t,s)=>{t=String(t??'');let z=100000,n=Math.max(1,Math.ceil(t.length/z));for(let i=0;i<n;i++){try{s?EvrasiaResearch.scriptChunk(k,i,n,t.slice(i*z,(i+1)*z)):EvrasiaResearch.artifactChunk(k,i,n,t.slice(i*z,(i+1)*z))}catch(e){}}};
-            const target=e=>{if(!e||e.nodeType!==1)return{};return{tag:(e.tagName||'').toLowerCase(),id=e.id||'',className:typeof e.className==='string'?e.className:'',name:e.name||'',type:e.type||'',role:e.getAttribute?.('role')||'',href:e.href||'',text:(e.innerText||e.textContent||'').trim().slice(0,300)}};
+            const target=e=>{if(!e||e.nodeType!==1)return{};return{tag:(e.tagName||'').toLowerCase(),id:e.id||'',className:typeof e.className==='string'?e.className:'',name:e.name||'',type:e.type||'',role:e.getAttribute?.('role')||'',href:e.href||'',text:(e.innerText||e.textContent||'').trim().slice(0,300)}};
             ['click','change','submit'].forEach(type=>document.addEventListener(type,e=>send({source:'user-action',time:Date.now(),action:type,page:location.href,target:target(e.target)}),true));
             const HP=history.pushState.bind(history),HR=history.replaceState.bind(history);
             history.pushState=function(s,t,u){let r=HP(s,t,u);send({source:'history',time:Date.now(),action:'pushState',url:location.href,state:s});return r};
