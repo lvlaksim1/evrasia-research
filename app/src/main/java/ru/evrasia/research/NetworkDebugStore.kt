@@ -31,6 +31,8 @@ object NetworkDebugStore {
         if (!networkSources.contains(source) && !record.has("url")) return
 
         val copy = JSONObject(record.toString())
+        if (isMirroredReplay(copy, source)) return
+
         val target = findMergeTarget(copy, source)
         if (target != null) {
             mergeInto(target, copy, source)
@@ -42,6 +44,31 @@ object NetworkDebugStore {
         events.add(copy)
         if (events.size > MAX_EVENTS) events.removeAt(0)
         revision.incrementAndGet()
+    }
+
+    private fun isMirroredReplay(record: JSONObject, source: String): Boolean {
+        val start = (events.size - MATCH_LOOKBACK).coerceAtLeast(0)
+        for (i in events.lastIndex downTo start) {
+            val candidate = events[i]
+            if (candidate.optString("source", "") != source) continue
+            if (candidate.optLong("time", Long.MIN_VALUE) != record.optLong("time", Long.MAX_VALUE)) continue
+            if (candidate.optString("url", "") != record.optString("url", "")) continue
+            if (candidate.optString("method", "") != record.optString("method", "")) continue
+            var same = true
+            val keys = record.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                if (key == "capturedSources") continue
+                val a = record.opt(key)
+                val b = candidate.opt(key)
+                if ((a == null) != (b == null) || (a != null && a.toString() != b?.toString())) {
+                    same = false
+                    break
+                }
+            }
+            if (same) return true
+        }
+        return false
     }
 
     private fun findMergeTarget(record: JSONObject, source: String): JSONObject? {
