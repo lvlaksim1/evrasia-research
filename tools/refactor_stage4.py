@@ -31,7 +31,11 @@ constants = '''    private val displayMergeSources = setOf("webview","resource-c
 '''
 if constants not in text:
     raise SystemExit("Display merge constants block not found")
-text = text.replace(constants, "", 1)
+text = text.replace(
+    constants,
+    '    private val displaySourceOrder = listOf("webview","fetch","xhr","resource-timing","resource-copy","replay","fetch-meta","xhr-meta")\n',
+    1,
+)
 text = text.replace("import kotlin.math.abs\n", "", 1)
 
 replace_private_fun(
