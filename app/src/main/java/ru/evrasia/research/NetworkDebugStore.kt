@@ -16,7 +16,7 @@ object NetworkDebugStore {
 
     private val networkSources = setOf(
         "webview", "fetch", "xhr", "resource-copy", "resource-timing", "fetch-meta", "xhr-meta",
-        "navigation", "navigation-timing", "new-window",
+        "navigation", "navigation-timing", "new-window", "user-action", "history",
         "websocket-open", "websocket-state", "websocket-send", "websocket-receive",
         "sse-open", "sse-state", "sse-message", "beacon", "source-map", "script-archive"
     )
