@@ -1,0 +1,46 @@
+name: Refactor stage 4 apply
+on:
+  push:
+    branches: [refactor-stage4-v54]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[stage4-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor-stage4-v54
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Apply refactor
+        run: python3 tools/refactor_stage4.py
+      - name: Verify decomposition
+        shell: bash
+        run: |
+          test -f app/src/main/java/ru/evrasia/research/NetworkEventClassifier.kt
+          test -f app/src/main/java/ru/evrasia/research/NetworkDisplayMerger.kt
+          test -f app/src/main/java/ru/evrasia/research/NetworkEndpointAnalyzer.kt
+          if grep -q "private fun collapseStrongDuplicates\|private fun mergeDisplayInto\|private fun strongDuplicateCandidate" app/src/main/java/ru/evrasia/research/NetworkDebuggerActivity.kt; then
+            echo "Display merger implementation still embedded in activity"
+            exit 1
+          fi
+      - name: Build APK
+        env:
+          WEB_RESEARCH_VERSION: v54-refactor-check
+        run: gradle :app:assembleDebug
+      - name: Commit validated refactor
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/ru/evrasia/research
+          git commit -m "refactor: decompose network debugger analysis [stage4-applied]"
+          git push origin HEAD:refactor-stage4-v54
