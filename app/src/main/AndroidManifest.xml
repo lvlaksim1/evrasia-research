@@ -7,6 +7,11 @@
         android:icon="@drawable/ic_web_research"
         android:roundIcon="@drawable/ic_web_research"
         android:usesCleartextTraffic="false">
+        <provider
+            android:name=".CookieTraceProvider"
+            android:authorities="${applicationId}.cookieTrace"
+            android:exported="false"
+            android:initOrder="100" />
         <activity android:name=".WebResearchV10Activity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
