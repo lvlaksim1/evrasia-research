@@ -8,7 +8,7 @@
         android:roundIcon="@drawable/ic_web_research"
         android:usesCleartextTraffic="false">
         <provider
-            android:name=".CookieTraceProvider"
+            android:name=".CookieTraceV47Provider"
             android:authorities="${applicationId}.cookieTrace"
             android:exported="false"
             android:initOrder="100" />
