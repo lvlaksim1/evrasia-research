@@ -5,11 +5,5 @@
         <item name="android:navigationBarColor">#081310</item>
         <item name="android:statusBarColor">#081310</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="alertDialogTheme">@style/AppAlertDialogTheme</item>
-    </style>
-
-    <style name="AppAlertDialogTheme" parent="Theme.AppCompat.DayNight.Dialog.Alert">
-        <item name="android:windowMinWidthMajor">97%</item>
-        <item name="android:windowMinWidthMinor">97%</item>
     </style>
 </resources>
