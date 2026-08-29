@@ -30,7 +30,15 @@ object NetworkDebugStore {
         revision.incrementAndGet()
     }
 
-    @Synchronized fun snapshot(): List<JSONObject> = events.map { JSONObject(it.toString()) }
+    @Synchronized fun snapshot(): List<JSONObject> {
+        val out = mutableListOf<JSONObject>()
+        val seen = HashSet<String>()
+        events.forEach { event ->
+            val fingerprint = event.toString()
+            if (seen.add(fingerprint)) out.add(JSONObject(fingerprint))
+        }
+        return out
+    }
 
     @Synchronized fun json(): JSONArray {
         val out = JSONArray()
