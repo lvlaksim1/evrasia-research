@@ -196,9 +196,11 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
         val requestText=buildRequestText(event,requestCookies)
         val responseText=buildResponseText(event,requestCookies)
+        val originalTexts=java.util.IdentityHashMap<TextView,CharSequence>()
+        var decoded=false
 
         val content=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setBackgroundColor(bg);setPadding(dp(10),dp(8),dp(10),dp(14))}
-        val decodeButton=compactButton("URL-ДЕКОДИРОВАТЬ") { decodeAllText(content) }
+        val decodeButton=compactButton("URL-ДЕКОДИРОВАТЬ") {}
         content.addView(decodeButton,LinearLayout.LayoutParams(-1,dp(40)).apply{setMargins(0,0,0,dp(4))})
         addSection(content,"REQUEST",highlightPlain(requestText,query))
         addSection(content,"RESPONSE",highlightPlain(responseText,query))
@@ -234,15 +236,35 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         content.addView(rawButton,LinearLayout.LayoutParams(-1,dp(38)).apply{setMargins(0,dp(9),0,dp(5))})
         content.addView(rawView)
 
+        captureDisplayTexts(content,originalTexts,decodeButton)
+        decodeButton.setOnClickListener{
+            decoded=!decoded
+            applyDecodedMode(content,originalTexts,decodeButton,decoded)
+            decodeButton.text=if(decoded)"URL-ДЕКОДИРОВАНО · ВЕРНУТЬ" else "URL-ДЕКОДИРОВАТЬ"
+        }
+
         val sv=ScrollView(this).apply{setBackgroundColor(bg);addView(content)}
         AlertDialog.Builder(this).setTitle("Детали запроса").setView(sv).setPositiveButton("Закрыть",null).show()
     }
 
-    private fun decodeAllText(view:View){
-        when(view){
-            is Button -> Unit
-            is TextView -> view.text=decodePercentText(view.text.toString())
-            is ViewGroup -> for(i in 0 until view.childCount)decodeAllText(view.getChildAt(i))
+    private fun captureDisplayTexts(view:View, originals:MutableMap<TextView,CharSequence>, skip:View){
+        when{
+            view===skip -> Unit
+            view is Button -> Unit
+            view is TextView -> originals[view]=SpannableString(view.text)
+            view is ViewGroup -> for(i in 0 until view.childCount)captureDisplayTexts(view.getChildAt(i),originals,skip)
+        }
+    }
+
+    private fun applyDecodedMode(view:View, originals:Map<TextView,CharSequence>, skip:View, decoded:Boolean){
+        when{
+            view===skip -> Unit
+            view is Button -> Unit
+            view is TextView -> {
+                val original=originals[view]?:view.text
+                view.text=if(decoded)decodePercentText(original.toString()) else original
+            }
+            view is ViewGroup -> for(i in 0 until view.childCount)applyDecodedMode(view.getChildAt(i),originals,skip,decoded)
         }
     }
 
