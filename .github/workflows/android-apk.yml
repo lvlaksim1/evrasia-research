@@ -31,6 +31,32 @@ jobs:
         shell: bash
         run: |
           echo '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' | base64 -d > webresearch.keystore
+      - name: Prepare request detail geometry
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('app/src/main/java/ru/evrasia/research/NetworkDebuggerActivity.kt')
+          s = p.read_text()
+          old = '''        dialog=AlertDialog.Builder(this).setView(root).create()
+        dialog.setOnShowListener{
+            val dm=resources.displayMetrics
+            dialog.window?.setLayout((dm.widthPixels*0.97).toInt(),(dm.heightPixels*0.92).toInt())
+            dialog.window?.setBackgroundDrawable(rounded(bg,18f,line))
+        }
+        dialog.show()'''
+          new = '''        dialog=AlertDialog.Builder(this).setView(root).create()
+        val dm=resources.displayMetrics
+        dialog.window?.apply{
+            setBackgroundDrawable(rounded(bg,18f,line))
+            attributes=attributes.apply{
+                width=(dm.widthPixels*0.97).toInt()
+                height=(dm.heightPixels*0.92).toInt()
+            }
+        }
+        dialog.show()'''
+          if old not in s:
+              raise SystemExit('request detail dialog block not found')
+          p.write_text(s.replace(old,new,1))
       - name: Build APK
         env:
           WEB_RESEARCH_VERSION: v${{ steps.version.outputs.number }}
