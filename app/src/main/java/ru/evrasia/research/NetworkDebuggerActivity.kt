@@ -700,6 +700,8 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         val responseHeaders=event.optJSONObject("responseHeaders")
         val mime=event.optString("mimeType",headerValue(responseHeaders,"Content-Type")).substringBefore(';').trim()
         val responseBody=event.optString("responseBody",event.optString("data",""))
+        val requestHeadersList=requestHeaderPairs(event)
+        val responseHeadersList=responseHeaderPairs(event)
         val bytes=responseBytes(event)
         val binary=bytes!=null&&bytes.isNotEmpty()&&isBinaryPayload(mime,responseBody,bytes)
         val imageBitmap=if(binary&&bytes!=null)try{BitmapFactory.decodeByteArray(bytes,0,bytes.size)}catch(_:Exception){null}else null
@@ -757,7 +759,9 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         actions.addView(detailButton("URL"){copyText("URL",url)})
         actions.addView(detailButton("cURL"){copyText("cURL",buildCurl(event))})
         actions.addView(detailButton("REQUEST"){copyText("REQUEST",buildRequestText(event,requestCookies))})
+        actions.addView(detailButton("REQ HEADERS"){copyText("REQUEST HEADERS",formatHeaders(requestHeadersList))})
         actions.addView(detailButton("RESPONSE"){copyText("RESPONSE",buildResponseCopy(event,requestCookies))})
+        actions.addView(detailButton("RESP HEADERS"){copyText("RESPONSE HEADERS",formatHeaders(responseHeadersList))})
         if(responseKind(event)=="JSON"&&responseBody.isNotBlank())actions.addView(detailButton("JSON"){copyText("JSON",prettyBody(responseBody,mime))})
         val decodeButton=detailButton("URL DECODE"){}
         actions.addView(decodeButton)
@@ -768,8 +772,18 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             orientation=LinearLayout.VERTICAL
             setPadding(0,0,0,dp(10))
         }
-        addCollapsible(content,"REQUEST",true,codeText(highlightPlain(buildRequestSectionText(event),query)))
-        addCollapsible(content,"RESPONSE",true,codeText(highlightPlain(buildResponseSectionText(event),query)))
+
+        val requestPanel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
+        requestPanel.addView(codeText(highlightPlain(buildRequestSummary(event),query)))
+        requestPanel.addView(subtitle("HEADERS"))
+        requestPanel.addView(headerBlock(requestHeadersList,query))
+        addCollapsible(content,"REQUEST",true,requestPanel)
+
+        val responsePanel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
+        responsePanel.addView(codeText(highlightPlain(buildResponseSummary(event),query)))
+        responsePanel.addView(subtitle("HEADERS"))
+        responsePanel.addView(headerBlock(responseHeadersList,query))
+        addCollapsible(content,"RESPONSE",true,responsePanel)
 
         val bodyPanel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
         val requestBody=event.optString("requestBody","")
@@ -865,6 +879,37 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         setPadding(dp(3),dp(6),dp(3),dp(4))
     }
 
+    private fun headerBlock(headers:List<Pair<String,String>>,query:String)=LinearLayout(this).apply{
+        orientation=LinearLayout.VERTICAL
+        background=rounded(panel,10f,line)
+        setPadding(dp(6),dp(4),dp(6),dp(4))
+        if(headers.isEmpty()){
+            addView(TextView(this@NetworkDebuggerActivity).apply{
+                text="—"
+                setTextColor(muted)
+                textSize=10.5f
+                typeface=Typeface.MONOSPACE
+                setPadding(dp(8),dp(8),dp(8),dp(8))
+            })
+        }else{
+            headers.forEach{(name,value)->
+                val raw="$name: $value"
+                val styled=SpannableString(raw)
+                styled.setSpan(ForegroundColorSpan(cyan),0,name.length,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                applyQueryHighlight(styled,query)
+                addView(TextView(this@NetworkDebuggerActivity).apply{
+                    text=styled
+                    setTextColor(textColor)
+                    textSize=10.5f
+                    typeface=Typeface.MONOSPACE
+                    setTextIsSelectable(true)
+                    setPadding(dp(9),dp(7),dp(9),dp(7))
+                    background=rounded(panel2,8f,Color.rgb(40,64,70))
+                },LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(2),0,dp(2))})
+            }
+        }
+    }
+
     private fun addCollapsible(root:LinearLayout,title:String,open:Boolean,body:View){
         var expanded=open
         val button=Button(this).apply{
@@ -919,26 +964,54 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         if(event.has("error"))append("\nERROR\n").append(event.optString("error")).append('\n')
     }.trimEnd()
 
+    private fun requestHeaderPairs(event:JSONObject):List<Pair<String,String>>{
+        val headers=event.optJSONObject("requestHeaders")?:event.optJSONObject("headers")
+        return objectHeaderPairs(headers)
+    }
+
+    private fun responseHeaderPairs(event:JSONObject):List<Pair<String,String>>{
+        val headers=event.optJSONObject("responseHeaders")
+        if(headers!=null)return objectHeaderPairs(headers)
+        return rawHeaderPairs(event.optString("responseHeadersRaw",""))
+    }
+
+    private fun objectHeaderPairs(headers:JSONObject?):List<Pair<String,String>>{
+        if(headers==null)return emptyList()
+        val out=mutableListOf<Pair<String,String>>()
+        val keys=headers.keys()
+        while(keys.hasNext()){
+            val key=keys.next()
+            out.add(key to headers.opt(key).toString())
+        }
+        return out.sortedBy{it.first.lowercase(Locale.US)}
+    }
+
+    private fun rawHeaderPairs(raw:String):List<Pair<String,String>>{
+        if(raw.isBlank())return emptyList()
+        return raw.lines().mapNotNull{line->
+            val split=line.indexOf(':')
+            if(split<=0)null else line.substring(0,split).trim().takeIf{it.isNotBlank()}?.let{name->name to line.substring(split+1).trim()}
+        }
+    }
+
+    private fun formatHeaders(headers:List<Pair<String,String>>):String=
+        if(headers.isEmpty())"—" else headers.joinToString("\n"){(name,value)->"$name: $value"}
+
     private fun buildRequestSectionText(event:JSONObject)=buildString{
         append(buildRequestSummary(event))
         append("\n\nHEADERS\n")
-        val headers=event.optJSONObject("requestHeaders")?:event.optJSONObject("headers")
-        append(prettyJson(headers?:JSONObject()))
+        append(formatHeaders(requestHeaderPairs(event)))
     }
 
     private fun buildResponseSectionText(event:JSONObject)=buildString{
         append(buildResponseSummary(event))
         append("\n\nHEADERS\n")
-        val headers=event.optJSONObject("responseHeaders")
-        append(if(headers!=null)prettyJson(headers) else event.optString("responseHeadersRaw","—"))
+        append(formatHeaders(responseHeaderPairs(event)))
     }
 
     private fun buildHeadersText(event:JSONObject)=buildString{
-        val requestHeaders=event.optJSONObject("requestHeaders")?:event.optJSONObject("headers")
-        append("REQUEST HEADERS\n").append(prettyJson(requestHeaders?:JSONObject()))
-        append("\n\nRESPONSE HEADERS\n")
-        val responseHeaders=event.optJSONObject("responseHeaders")
-        append(if(responseHeaders!=null)prettyJson(responseHeaders) else event.optString("responseHeadersRaw","—"))
+        append("REQUEST HEADERS\n").append(formatHeaders(requestHeaderPairs(event)))
+        append("\n\nRESPONSE HEADERS\n").append(formatHeaders(responseHeaderPairs(event)))
     }
 
     private fun buildTimingText(event:JSONObject)=buildString{
@@ -970,7 +1043,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
     private fun buildRequestText(event:JSONObject,cookies:String)=buildString{
         append(buildRequestSummary(event))
-        append("\n\n").append(buildHeadersText(event).substringBefore("\n\nRESPONSE HEADERS"))
+        append("\n\nREQUEST HEADERS\n").append(formatHeaders(requestHeaderPairs(event)))
         append("\n\nREQUEST COOKIES\n").append(cookies.ifBlank{"—"})
         append("\n\nREQUEST BODY\n")
         val body=event.optString("requestBody","")
@@ -980,9 +1053,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
     private fun buildResponseCopy(event:JSONObject,cookies:String)=buildString{
         append(buildResponseSummary(event))
-        append("\n\nRESPONSE HEADERS\n")
-        val responseHeaders=event.optJSONObject("responseHeaders")
-        append(if(responseHeaders!=null)prettyJson(responseHeaders) else event.optString("responseHeadersRaw","—"))
+        append("\n\nRESPONSE HEADERS\n").append(formatHeaders(responseHeaderPairs(event)))
         append("\n\nCOOKIES FOR URL\n").append(cookies.ifBlank{"—"})
         append("\n\nRESPONSE BODY\n").append(event.optString("responseBody",event.optString("data","—")))
     }
