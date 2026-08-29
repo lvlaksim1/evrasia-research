@@ -27,23 +27,41 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
     private val ticker=object:Runnable{override fun run(){syncNetworkStore();advancedTick++;if(advancedTick%8==0)browserRef.get()?.let{installAdvancedCapture(it)};debuggerRef.get()?.let{styleDebuggerRows(it)};handler.postDelayed(this,250)}}
     override fun onCreate(){super.onCreate();registerActivityLifecycleCallbacks(this);handler.post(ticker)}
 
-    fun syncNetworkStore(){val browser=browserRef.get()?:return;try{val f=WebResearchV10Activity::class.java.getDeclaredField("archive");f.isAccessible=true;val a=f.get(browser) as? ResearchArchive?:return;synchronized(a){val n=a.records.length();if(n<mirroredCount){mirroredCount=0;mirroredScripts.clear();NetworkDebugStore.clear()};while(mirroredCount<n){a.records.optJSONObject(mirroredCount)?.let{NetworkDebugStore.add(it)};mirroredCount++};a.scripts.forEach{(u,b)->if(mirroredScripts.add(u))NetworkDebugStore.add(org.json.JSONObject().put("source","js-file").put("time",System.currentTimeMillis()).put("method","GET").put("url",u).put("mimeType","application/javascript").put("responseSize",b.size).put("responseBody",try{b.toString(Charsets.UTF_8)}catch(_:Exception){"[binary]"}))}}}catch(_:Exception){}}
+    fun syncNetworkStore(){
+        val browser=browserRef.get()?:return
+        try{
+            val f=WebResearchV10Activity::class.java.getDeclaredField("archive");f.isAccessible=true
+            val a=f.get(browser) as? ResearchArchive?:return
+            synchronized(a){
+                val n=a.records.length()
+                if(n<mirroredCount){
+                    NetworkDebugStore.clear()
+                    mirroredScripts.clear()
+                }
+                mirroredCount=n
+                a.scripts.forEach{(u,b)->
+                    val inline=!u.startsWith("http://")&&!u.startsWith("https://")||u.contains("#inline-")
+                    if(inline&&mirroredScripts.add(u))NetworkDebugStore.add(org.json.JSONObject().put("source","js-file").put("time",System.currentTimeMillis()).put("method","JS").put("url",u).put("mimeType","application/javascript").put("responseSize",b.size).put("responseBody",try{b.toString(Charsets.UTF_8)}catch(_:Exception){"[binary]"}))
+                }
+            }
+        }catch(_:Exception){}
+    }
 
     private fun installAdvancedCapture(a:WebResearchV10Activity){
         try{
-            val f=WebResearchV10Activity::class.java.getDeclaredField("web");f.isAccessible=true;val w=f.get(a) as? WebView?:return
+            val f=WebResearchV10Activity::class.java.getDeclaredField("web");f.isAccessible=true
+            val w=f.get(a) as? WebView?:return
             val js="""
                 (function(){
-                  if(window.__WR_ADV)return;window.__WR_ADV=true;
+                  if(window.__WR_PERF)return;window.__WR_PERF=true;
                   const send=o=>{try{EvrasiaResearch.record(JSON.stringify(o))}catch(e){}};
                   const num=x=>Number.isFinite(x)?Math.max(0,Math.round(x*1000)/1000):0;
                   const timing=r=>({queueing:num(r.fetchStart-r.startTime),dns:num(r.domainLookupEnd-r.domainLookupStart),connect:num(r.connectEnd-r.connectStart),ssl:r.secureConnectionStart>0?num(r.connectEnd-r.secureConnectionStart):0,request:num(r.responseStart-r.requestStart),ttfb:num(r.responseStart-r.requestStart),download:num(r.responseEnd-r.responseStart),redirect:num(r.redirectEnd-r.redirectStart),worker:num(r.workerStart>0?r.fetchStart-r.workerStart:0)});
                   const cache=r=>r.transferSize===0&&r.decodedBodySize>0?(r.workerStart>0?'service-worker':'memory/disk-cache'):'network';
-                  const emit=r=>send({source:'resource-timing',time:Math.round(performance.timeOrigin+r.startTime),method:'GET',url:r.name,initiatorType:r.initiatorType||'',duration:num(r.duration),httpVersion:r.nextHopProtocol||'',transferSize:r.transferSize||0,encodedBodySize:r.encodedBodySize||0,decodedBodySize:r.decodedBodySize||0,responseSize:r.decodedBodySize||0,cache:cache(r),deliveryType:r.deliveryType||'',renderBlockingStatus:r.renderBlockingStatus||'',redirected:r.redirectEnd>r.redirectStart,redirectStart:num(r.redirectStart),redirectEnd:num(r.redirectEnd),workerStart:num(r.workerStart),requestStart:num(r.requestStart),responseStart:num(r.responseStart),responseEnd:num(r.responseEnd),timing:timing(r)});
+                  const methodFor=(url,time)=>{try{let hints=window.__WR_REQ_HINTS||[],best=null,delta=1e15;for(let i=hints.length-1;i>=0;i--){let h=hints[i];if(h.url!==url)continue;let d=Math.abs((h.time||0)-time);if(d<delta&&d<=5000){best=h;delta=d}}return best?.method||'GET'}catch(e){return 'GET'}};
+                  const emit=r=>{let t=Math.round(performance.timeOrigin+r.startTime);send({source:'resource-timing',time:t,method:methodFor(r.name,t),url:r.name,initiatorType:r.initiatorType||'',duration:num(r.duration),httpVersion:r.nextHopProtocol||'',transferSize:r.transferSize||0,encodedBodySize:r.encodedBodySize||0,decodedBodySize:r.decodedBodySize||0,responseSize:r.decodedBodySize||0,cache:cache(r),deliveryType:r.deliveryType||'',renderBlockingStatus:r.renderBlockingStatus||'',redirected:r.redirectEnd>r.redirectStart,redirectStart:num(r.redirectStart),redirectEnd:num(r.redirectEnd),workerStart:num(r.workerStart),requestStart:num(r.requestStart),responseStart:num(r.responseStart),responseEnd:num(r.responseEnd),timing:timing(r)})};
                   try{performance.getEntriesByType('resource').forEach(emit);new PerformanceObserver(l=>l.getEntries().forEach(emit)).observe({type:'resource',buffered:true})}catch(e){}
                   try{let n=performance.getEntriesByType('navigation')[0];if(n)send({source:'navigation-timing',time:Math.round(performance.timeOrigin+n.startTime),method:'GET',url:n.name,httpVersion:n.nextHopProtocol||'',duration:num(n.duration),transferSize:n.transferSize||0,encodedBodySize:n.encodedBodySize||0,decodedBodySize:n.decodedBodySize||0,cache:cache(n),redirectCount:n.redirectCount||0,timing:timing(n)})}catch(e){}
-                  const oldFetch=window.fetch;if(oldFetch&&!oldFetch.__wrAdv){const wrapped=async function(i,n){let u=typeof i==='string'?i:(i&&i.url)||'',m=(n&&n.method)||(i&&i.method)||'GET',stack='';try{stack=(new Error()).stack||''}catch(e){};let hs={};try{let h=new Headers((n&&n.headers)||(i&&i.headers)||{});h.forEach((v,k)=>hs[k]=v)}catch(e){};let t=performance.now();try{let r=await oldFetch.apply(this,arguments);send({source:'fetch-meta',time:Math.round(performance.timeOrigin+t),method:m,url:String(u),finalUrl:r.url||String(u),status:r.status,statusText:r.statusText,redirected:!!r.redirected,responseType:r.type||'',duration:num(performance.now()-t),requestHeaders:hs,initiatorStack:stack});return r}catch(e){send({source:'fetch-meta',time:Math.round(performance.timeOrigin+t),method:m,url:String(u),duration:num(performance.now()-t),requestHeaders:hs,initiatorStack:stack,error:String(e)});throw e}};wrapped.__wrAdv=true;window.fetch=wrapped}
-                  try{const XO=XMLHttpRequest.prototype.open,XS=XMLHttpRequest.prototype.send;if(!XMLHttpRequest.prototype.__wrAdv){XMLHttpRequest.prototype.__wrAdv=true;XMLHttpRequest.prototype.open=function(m,u){this.__advMethod=m;this.__advUrl=String(u);return XO.apply(this,arguments)};XMLHttpRequest.prototype.send=function(b){let x=this,t=performance.now(),stack='';try{stack=(new Error()).stack||''}catch(e){};x.addEventListener('loadend',()=>send({source:'xhr-meta',time:Math.round(performance.timeOrigin+t),method:x.__advMethod||'GET',url:x.__advUrl||'',status:x.status,statusText:x.statusText,duration:num(performance.now()-t),initiatorStack:stack}));return XS.apply(this,arguments)}}}catch(e){}
                 })();
             """.trimIndent()
             w.evaluateJavascript(js,null)
