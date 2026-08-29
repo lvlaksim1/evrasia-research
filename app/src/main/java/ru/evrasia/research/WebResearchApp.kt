@@ -24,7 +24,7 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
     private var advancedTick=0
     private val mirroredScripts=mutableSetOf<String>()
     private val ink=Color.rgb(3,10,15); private val surface=Color.rgb(7,18,25); private val surface2=Color.rgb(10,25,34); private val line=Color.rgb(21,57,69); private val cyan=Color.rgb(0,226,239); private val white=Color.rgb(232,244,248); private val muted=Color.rgb(113,139,151)
-    private val ticker=object:Runnable{override fun run(){syncNetworkStore();advancedTick++;if(advancedTick%8==0)browserRef.get()?.let{installAdvancedCapture(it)};debuggerRef.get()?.let{styleDebuggerRows(it)};handler.postDelayed(this,250)}}
+    private val ticker=object:Runnable{override fun run(){syncNetworkStore();advancedTick++;browserRef.get()?.let{if(advancedTick%2==0)it.ensureInstrumentation();if(advancedTick%8==0)installAdvancedCapture(it)};debuggerRef.get()?.let{styleDebuggerRows(it)};handler.postDelayed(this,250)}}
     override fun onCreate(){super.onCreate();registerActivityLifecycleCallbacks(this);handler.post(ticker)}
 
     fun syncNetworkStore(){
@@ -85,7 +85,7 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
     private fun round(a:Activity,fill:Int,r:Int,stroke:Int?=null)=GradientDrawable().apply{shape=GradientDrawable.RECTANGLE;setColor(fill);cornerRadius=dp(a,r).toFloat();stroke?.let{setStroke(dp(a,1),it)}}
     private fun dp(a:Activity,v:Int)=(v*a.resources.displayMetrics.density).toInt()
     override fun onActivityCreated(a:Activity,s:Bundle?){when(a){is WebResearchV10Activity->{browserRef=WeakReference(a);mirroredCount=0;mirroredScripts.clear();NetworkDebugStore.clear()};is NetworkDebuggerActivity->debuggerRef=WeakReference(a)}}
-    override fun onActivityResumed(a:Activity){when(a){is WebResearchV10Activity->{browserRef=WeakReference(a);syncNetworkStore();brandBrowser(a);installAdvancedCapture(a)};is NetworkDebuggerActivity->{debuggerRef=WeakReference(a);browserRef.get()?.let{installAdvancedCapture(it)};syncNetworkStore();brandDebugger(a)}}}
+    override fun onActivityResumed(a:Activity){when(a){is WebResearchV10Activity->{browserRef=WeakReference(a);syncNetworkStore();brandBrowser(a);a.ensureInstrumentation();installAdvancedCapture(a)};is NetworkDebuggerActivity->{debuggerRef=WeakReference(a);browserRef.get()?.let{it.ensureInstrumentation();installAdvancedCapture(it)};syncNetworkStore();brandDebugger(a)}}}
     override fun onActivityDestroyed(a:Activity){if(a is WebResearchV10Activity&&browserRef.get()===a)browserRef.clear();if(a is NetworkDebuggerActivity&&debuggerRef.get()===a)debuggerRef.clear()}
     override fun onActivityStarted(a:Activity){};override fun onActivityPaused(a:Activity){};override fun onActivityStopped(a:Activity){};override fun onActivitySaveInstanceState(a:Activity,o:Bundle){}
 }
