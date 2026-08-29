@@ -879,35 +879,14 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         setPadding(dp(3),dp(6),dp(3),dp(4))
     }
 
-    private fun headerBlock(headers:List<Pair<String,String>>,query:String)=LinearLayout(this).apply{
-        orientation=LinearLayout.VERTICAL
-        background=rounded(panel,10f,line)
-        setPadding(dp(6),dp(4),dp(6),dp(4))
-        if(headers.isEmpty()){
-            addView(TextView(this@NetworkDebuggerActivity).apply{
-                text="—"
-                setTextColor(muted)
-                textSize=10.5f
-                typeface=Typeface.MONOSPACE
-                setPadding(dp(8),dp(8),dp(8),dp(8))
-            })
-        }else{
-            headers.forEach{(name,value)->
-                val raw="$name: $value"
-                val styled=SpannableString(raw)
-                styled.setSpan(ForegroundColorSpan(cyan),0,name.length,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                applyQueryHighlight(styled,query)
-                addView(TextView(this@NetworkDebuggerActivity).apply{
-                    text=styled
-                    setTextColor(textColor)
-                    textSize=10.5f
-                    typeface=Typeface.MONOSPACE
-                    setTextIsSelectable(true)
-                    setPadding(dp(9),dp(7),dp(9),dp(7))
-                    background=rounded(panel2,8f,Color.rgb(40,64,70))
-                },LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(2),0,dp(2))})
-            }
-        }
+    private fun headerBlock(headers:List<Pair<String,String>>,query:String)=TextView(this).apply{
+        text=highlightPlain(formatHeaders(headers),query)
+        setTextColor(if(headers.isEmpty())muted else textColor)
+        textSize=10.5f
+        typeface=Typeface.MONOSPACE
+        setTextIsSelectable(true)
+        setPadding(dp(10),dp(9),dp(10),dp(9))
+        background=rounded(panel2,9f,Color.rgb(40,64,70))
     }
 
     private fun addCollapsible(root:LinearLayout,title:String,open:Boolean,body:View){
