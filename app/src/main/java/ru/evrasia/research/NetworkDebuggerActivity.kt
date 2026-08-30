@@ -226,7 +226,6 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
     override fun onResume(){
         super.onResume()
-        (application as? WebResearchApp)?.syncNetworkStore()
         handler.removeCallbacks(refresh)
         handler.post(refresh)
     }

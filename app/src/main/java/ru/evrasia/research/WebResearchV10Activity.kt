@@ -416,13 +416,13 @@ class WebResearchV10Activity : AppCompatActivity() {
                 val bytes = (if (status in 200..399) c.inputStream else c.errorStream)?.use { it.readBytes() } ?: ByteArray(0)
                 val responseHeaders = JSONObject(); c.headerFields.filterKeys { it != null }.forEach { (k, v) -> responseHeaders.put(k, v.joinToString(", ")) }
                 val finalUrl = c.url.toString(); val contentType = c.contentType ?: ""
-                archive.resources[url] = bytes
-                archive.resourceMeta[url] = JSONObject().put("status", status).put("contentType", contentType).put("finalUrl", finalUrl).put("responseHeaders", responseHeaders).put("copyMode", copyMode)
-                if (looksLikeJs(url) || contentType.contains("javascript", true)) archive.scripts[url] = bytes
+                val resourceMeta = JSONObject().put("status", status).put("contentType", contentType).put("finalUrl", finalUrl).put("responseHeaders", responseHeaders).put("copyMode", copyMode)
+                archive.putResource(url, bytes, resourceMeta)
+                if (looksLikeJs(url) || contentType.contains("javascript", true)) archive.putScript(url, bytes)
                 addRecord(JSONObject().put("source", "resource-copy").put("copyMode", copyMode).put("time", started).put("duration", System.currentTimeMillis() - started).put("method", "GET").put("url", url).put("status", status).put("responseHeaders", responseHeaders).put("mimeType", contentType).put("responseSize", bytes.size).put("redirectURL", if (finalUrl != url) finalUrl else ""))
                 c.disconnect()
             } catch (e: Exception) {
-                archive.resourceMeta[url] = JSONObject().put("error", e.toString()).put("copyMode", copyMode)
+                archive.putResourceMeta(url, JSONObject().put("error", e.toString()).put("copyMode", copyMode))
                 addRecord(JSONObject().put("source", "resource-copy").put("copyMode", copyMode).put("time", System.currentTimeMillis()).put("method", "GET").put("url", url).put("error", e.toString()))
             } finally { downloadingResources.remove(url); scheduleBadgeUpdate() }
         }
@@ -434,9 +434,9 @@ class WebResearchV10Activity : AppCompatActivity() {
             try {
                 val c = openConnection(url, headers); val status = c.responseCode
                 val bytes = (if (status in 200..399) c.inputStream else c.errorStream)?.use { it.readBytes() }
-                if (bytes != null) archive.scripts[url] = bytes else archive.scriptErrors[url] = "HTTP $status: empty body"
+                if (bytes != null) archive.putScript(url, bytes) else archive.putScriptError(url, "HTTP $status: empty body")
                 c.disconnect()
-            } catch (e: Exception) { archive.scriptErrors[url] = e.toString() }
+            } catch (e: Exception) { archive.putScriptError(url, e.toString()) }
             finally { downloadingScripts.remove(url); scheduleBadgeUpdate() }
         }
     }
@@ -596,7 +596,7 @@ class WebResearchV10Activity : AppCompatActivity() {
 
     inner class Bridge(private val context: Context) {
         @JavascriptInterface fun record(json: String) { try { addRecord(JSONObject(json)) } catch (_: Exception) {} }
-        @JavascriptInterface fun snapshot(json: String) { try { archive.snapshot = JSONObject(json); runOnUiThread { updateStats() } } catch (_: Exception) {} }
+        @JavascriptInterface fun snapshot(json: String) { try { archive.updateSnapshot(JSONObject(json)); runOnUiThread { updateStats() } } catch (_: Exception) {} }
         @JavascriptInterface fun externalScript(url: String) { if (url.isNotBlank()) captureExternalScript(url, emptyMap()) }
         @JavascriptInterface fun requestSnapshot() { runOnUiThread { capturePageSnapshot() } }
         @JavascriptInterface fun scriptChunk(url: String, index: Int, total: Int, chunk: String) { collectChunk(url, index, total, chunk, true) }
@@ -609,9 +609,9 @@ class WebResearchV10Activity : AppCompatActivity() {
             val map = all.getOrPut(key) { ConcurrentHashMap() }; map[index] = chunk
             if (map.size == total) {
                 val out = StringBuilder(); for (i in 0 until total) out.append(map[i] ?: "")
-                if (script) archive.scripts[key] = out.toString().toByteArray(Charsets.UTF_8) else archive.extraArtifacts[key] = out.toString().toByteArray(Charsets.UTF_8)
+                if (script) archive.putScript(key, out.toString().toByteArray(Charsets.UTF_8)) else archive.putArtifact(key, out.toString().toByteArray(Charsets.UTF_8))
                 all.remove(key); scheduleBadgeUpdate()
             }
-        } catch (e: Exception) { if (script) archive.scriptErrors[key] = e.toString() }
+        } catch (e: Exception) { if (script) archive.putScriptError(key, e.toString()) }
     }
 }

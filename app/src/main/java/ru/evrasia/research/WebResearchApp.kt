@@ -21,33 +21,12 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
     private val handler=Handler(Looper.getMainLooper())
     private var browserRef=WeakReference<WebResearchV10Activity>(null)
     private var debuggerRef=WeakReference<NetworkDebuggerActivity>(null)
-    private var mirroredCount=0
     private var advancedTick=0
-    private val mirroredScripts=mutableSetOf<String>()
     private val ink=Color.rgb(3,10,15); private val surface=Color.rgb(7,18,25); private val surface2=Color.rgb(10,25,34); private val line=Color.rgb(21,57,69); private val cyan=Color.rgb(0,226,239); private val white=Color.rgb(232,244,248); private val muted=Color.rgb(113,139,151)
-    private val ticker=object:Runnable{override fun run(){syncNetworkStore();advancedTick++;browserRef.get()?.let{if(advancedTick%5==0){it.ensureInstrumentation();installAdvancedCapture(it)}};handler.postDelayed(this,1000)}}
+    private val ticker=object:Runnable{override fun run(){advancedTick++;browserRef.get()?.let{if(advancedTick%5==0){it.ensureInstrumentation();installAdvancedCapture(it)}};handler.postDelayed(this,1000)}}
     override fun onCreate(){super.onCreate();registerActivityLifecycleCallbacks(this);handler.post(ticker)}
 
     internal fun activeBrowserActivity(): WebResearchV10Activity? = browserRef.get()
-
-    fun syncNetworkStore(){
-        val browser=browserRef.get()?:return
-        try{
-            val a=browser.researchArchive()
-            synchronized(a){
-                val n=a.records.length()
-                if(n<mirroredCount){
-                    NetworkDebugStore.clear()
-                    mirroredScripts.clear()
-                }
-                mirroredCount=n
-                a.scripts.forEach{(u,b)->
-                    val inline=!u.startsWith("http://")&&!u.startsWith("https://")||u.contains("#inline-")
-                    if(inline&&mirroredScripts.add(u))NetworkDebugStore.add(org.json.JSONObject().put("source","js-file").put("time",System.currentTimeMillis()).put("method","JS").put("url",u).put("mimeType","application/javascript").put("responseSize",b.size).put("responseBody",try{b.toString(Charsets.UTF_8)}catch(_:Exception){"[binary]"}))
-                }
-            }
-        }catch(_:Exception){}
-    }
 
     fun currentCookiesText():String{
         val browser=browserRef.get()?:return "Браузер не открыт"
@@ -94,7 +73,7 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
         navCard.background=round(a,surface,12,line);navCard.setPadding(dp(a,4),dp(a,4),dp(a,4),dp(a,4));(navCard.layoutParams as? LinearLayout.LayoutParams)?.apply{setMargins(dp(a,5),dp(a,4),dp(a,5),dp(a,4));navCard.layoutParams=this}
         val nav=navCard.getChildAt(0) as? LinearLayout?:return;val address=nav.getChildAt(0) as? EditText?:return;val go=nav.getChildAt(1) as? Button?:return;address.textSize=12f;address.typeface=Typeface.create(Typeface.MONOSPACE,Typeface.NORMAL);address.setTextColor(white);address.setHintTextColor(muted);address.background=round(a,surface2,9,line);address.setPadding(dp(a,10),0,dp(a,10),0);address.layoutParams=LinearLayout.LayoutParams(0,dp(a,36),1f).apply{marginStart=dp(a,4);marginEnd=dp(a,4)};applyIcon(a,go,TechIconDrawable.Kind.NAVIGATE,true);go.layoutParams=LinearLayout.LayoutParams(dp(a,38),dp(a,36))
         if(bookmarks.childCount>0)bookmarks.getChildAt(0).visibility=View.GONE;bookmarks.background=round(a,surface,10,line);bookmarks.setPadding(dp(a,5),dp(a,4),dp(a,5),dp(a,4));(bookmarks.layoutParams as? LinearLayout.LayoutParams)?.apply{setMargins(dp(a,5),0,dp(a,5),dp(a,4));bookmarks.layoutParams=this};val row=if(bookmarks.childCount>1)bookmarks.getChildAt(1) as? LinearLayout else null;row?.gravity=Gravity.CENTER_VERTICAL;row?.let{for(i in 0 until it.childCount){when(val v=it.getChildAt(i)){is Button->{v.textSize=9f;v.setTextColor(white);v.background=round(a,surface2,8,line);v.minWidth=0;v.minimumWidth=0};is Spinner->v.background=round(a,surface2,8,line)}};val bs=(0 until it.childCount).map{i->it.getChildAt(i)}.filterIsInstance<Button>();bs.firstOrNull()?.let{b->applyIcon(a,b,TechIconDrawable.Kind.NAVIGATE,true)}}
-        val menu=iconButton(a,TechIconDrawable.Kind.MENU).apply{setOnClickListener{bookmarks.visibility=if(bookmarks.visibility==View.VISIBLE)View.GONE else View.VISIBLE}};nav.addView(menu,0,LinearLayout.LayoutParams(dp(a,38),dp(a,36)));val net=iconButton(a,TechIconDrawable.Kind.NETWORK,true).apply{setOnClickListener{installAdvancedCapture(a);syncNetworkStore();a.startActivity(Intent(a,NetworkDebuggerActivity::class.java))}};nav.addView(net,LinearLayout.LayoutParams(dp(a,38),dp(a,36)).apply{marginStart=dp(a,4)})}
+        val menu=iconButton(a,TechIconDrawable.Kind.MENU).apply{setOnClickListener{bookmarks.visibility=if(bookmarks.visibility==View.VISIBLE)View.GONE else View.VISIBLE}};nav.addView(menu,0,LinearLayout.LayoutParams(dp(a,38),dp(a,36)));val net=iconButton(a,TechIconDrawable.Kind.NETWORK,true).apply{setOnClickListener{installAdvancedCapture(a);a.startActivity(Intent(a,NetworkDebuggerActivity::class.java))}};nav.addView(net,LinearLayout.LayoutParams(dp(a,38),dp(a,36)).apply{marginStart=dp(a,4)})}
 
     private fun addCookiesButton(a:NetworkDebuggerActivity,root:LinearLayout){
         val toolbarScroll=root.getChildAt(0) as? HorizontalScrollView?:return
@@ -145,8 +124,8 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
     private fun surfaceDrawable()=GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,intArrayOf(surface,surface2))
     private fun round(a:Activity,fill:Int,r:Int,stroke:Int?=null)=GradientDrawable().apply{shape=GradientDrawable.RECTANGLE;setColor(fill);cornerRadius=dp(a,r).toFloat();stroke?.let{setStroke(dp(a,1),it)}}
     private fun dp(a:Activity,v:Int)=(v*a.resources.displayMetrics.density).toInt()
-    override fun onActivityCreated(a:Activity,s:Bundle?){when(a){is WebResearchV10Activity->{browserRef=WeakReference(a);mirroredCount=0;mirroredScripts.clear();NetworkDebugStore.clear();brandBrowser(a)};is NetworkDebuggerActivity->debuggerRef=WeakReference(a)}}
-    override fun onActivityResumed(a:Activity){when(a){is WebResearchV10Activity->{browserRef=WeakReference(a);syncNetworkStore();brandBrowser(a);a.ensureInstrumentation();installAdvancedCapture(a)};is NetworkDebuggerActivity->{debuggerRef=WeakReference(a);browserRef.get()?.let{it.ensureInstrumentation();installAdvancedCapture(it)};syncNetworkStore();brandDebugger(a)}}}
+    override fun onActivityCreated(a:Activity,s:Bundle?){when(a){is WebResearchV10Activity->{browserRef=WeakReference(a);NetworkDebugStore.clear();brandBrowser(a)};is NetworkDebuggerActivity->debuggerRef=WeakReference(a)}}
+    override fun onActivityResumed(a:Activity){when(a){is WebResearchV10Activity->{browserRef=WeakReference(a);brandBrowser(a);a.ensureInstrumentation();installAdvancedCapture(a)};is NetworkDebuggerActivity->{debuggerRef=WeakReference(a);browserRef.get()?.let{it.ensureInstrumentation();installAdvancedCapture(it)};brandDebugger(a)}}}
     override fun onActivityDestroyed(a:Activity){if(a is WebResearchV10Activity&&browserRef.get()===a)browserRef.clear();if(a is NetworkDebuggerActivity&&debuggerRef.get()===a)debuggerRef.clear()}
     override fun onActivityStarted(a:Activity){};override fun onActivityPaused(a:Activity){};override fun onActivityStopped(a:Activity){};override fun onActivitySaveInstanceState(a:Activity,o:Bundle){}
 }
