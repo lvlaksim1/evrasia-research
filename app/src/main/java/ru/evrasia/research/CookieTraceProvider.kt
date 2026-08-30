@@ -37,7 +37,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
-class CookieTraceV47Provider : ContentProvider(), Application.ActivityLifecycleCallbacks {
+class CookieTraceProvider : ContentProvider(), Application.ActivityLifecycleCallbacks {
     private val handler = Handler(Looper.getMainLooper())
     private var browserRef = WeakReference<WebResearchV10Activity>(null)
     private var debuggerRef = WeakReference<NetworkDebuggerActivity>(null)
@@ -117,7 +117,7 @@ class CookieTraceV47Provider : ContentProvider(), Application.ActivityLifecycleC
     private fun injectCookieHooks(web: WebView) {
         val js = """
             (function(){
-              if(window.__WR_COOKIE_TRACE_V47)return;window.__WR_COOKIE_TRACE_V47=true;
+              if(window.__WR_COOKIE_TRACE)return;window.__WR_COOKIE_TRACE=true;
               const emit=o=>{try{const k='cookie-trace-event/'+Date.now()+'-'+Math.random().toString(36).slice(2);EvrasiaResearch.artifactChunk(k,0,1,JSON.stringify(o))}catch(e){}};
               const first=raw=>{raw=String(raw||'');const p=raw.indexOf(';'),head=(p>=0?raw.slice(0,p):raw),eq=head.indexOf('=');return {raw:raw,name:(eq>=0?head.slice(0,eq):head).trim(),value:eq>=0?head.slice(eq+1):''}};
               const hasName=(raw,name)=>String(raw||'').split(';').some(x=>x.trim().startsWith(name+'='));
@@ -137,8 +137,8 @@ class CookieTraceV47Provider : ContentProvider(), Application.ActivityLifecycleC
               }catch(e){}
               try{
                 const cs=window.cookieStore;
-                if(cs&&!cs.__wrCookieTraceV47){
-                  try{Object.defineProperty(cs,'__wrCookieTraceV47',{value:true})}catch(e){cs.__wrCookieTraceV47=true}
+                if(cs&&!cs.__wrCookieTrace){
+                  try{Object.defineProperty(cs,'__wrCookieTrace',{value:true})}catch(e){cs.__wrCookieTrace=true}
                   ['set','delete'].forEach(fn=>{try{const orig=cs[fn]&&cs[fn].bind(cs);if(!orig)return;cs[fn]=function(){
                     const a=arguments,o=(a[0]&&typeof a[0]==='object')?a[0]:null,name=String(o?.name??a[0]??''),value=fn==='set'?String(o?.value??a[1]??''):'';
                     let before='';try{before=document.cookie||''}catch(e){};const existed=name?hasName(before,name):false;const action=fn==='delete'?'DELETE':(existed?'UPDATE':'CREATE');
