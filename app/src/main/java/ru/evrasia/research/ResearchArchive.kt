@@ -27,6 +27,44 @@ class ResearchArchive {
         NetworkDebugStore.add(record)
     }
 
+    fun putScript(url: String, bytes: ByteArray) {
+        val previous = scripts.put(url, bytes)
+        if (previous == null && isInlineScript(url)) {
+            NetworkDebugStore.add(JSONObject()
+                .put("source", "js-file")
+                .put("time", System.currentTimeMillis())
+                .put("method", "JS")
+                .put("url", url)
+                .put("mimeType", "application/javascript")
+                .put("responseSize", bytes.size)
+                .put("responseBody", try { bytes.toString(Charsets.UTF_8) } catch (_: Exception) { "[binary]" }))
+        }
+    }
+
+    fun putScriptError(url: String, error: String) {
+        scriptErrors[url] = error
+    }
+
+    fun putResource(url: String, bytes: ByteArray, meta: JSONObject) {
+        resources[url] = bytes
+        resourceMeta[url] = meta
+    }
+
+    fun putResourceMeta(url: String, meta: JSONObject) {
+        resourceMeta[url] = meta
+    }
+
+    fun putArtifact(key: String, bytes: ByteArray) {
+        extraArtifacts[key] = bytes
+    }
+
+    fun updateSnapshot(value: JSONObject) {
+        snapshot = value
+    }
+
+    private fun isInlineScript(url: String): Boolean =
+        (!url.startsWith("http://") && !url.startsWith("https://")) || url.contains("#inline-")
+
     @Synchronized fun clear() {
         while (records.length() > 0) records.remove(records.length() - 1)
         scripts.clear()
@@ -35,6 +73,7 @@ class ResearchArchive {
         resourceMeta.clear()
         extraArtifacts.clear()
         snapshot = JSONObject()
+        NetworkDebugStore.clear()
     }
 
     fun writeZip(output: OutputStream, pageUrl: String) {
