@@ -34,7 +34,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class CookieTraceV48UiProvider : ContentProvider(), Application.ActivityLifecycleCallbacks {
+class CookieTraceUiProvider : ContentProvider(), Application.ActivityLifecycleCallbacks {
     private val handler = Handler(Looper.getMainLooper())
     private var browserRef = WeakReference<WebResearchV10Activity>(null)
     private var debuggerRef = WeakReference<NetworkDebuggerActivity>(null)

@@ -8,12 +8,12 @@
         android:roundIcon="@drawable/ic_web_research"
         android:usesCleartextTraffic="false">
         <provider
-            android:name=".CookieTraceV47Provider"
+            android:name=".CookieTraceProvider"
             android:authorities="${applicationId}.cookieTrace"
             android:exported="false"
             android:initOrder="100" />
         <provider
-            android:name=".CookieTraceV48UiProvider"
+            android:name=".CookieTraceUiProvider"
             android:authorities="${applicationId}.cookieTraceUi"
             android:exported="false"
             android:initOrder="90" />
