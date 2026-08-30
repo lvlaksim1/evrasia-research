@@ -38,13 +38,10 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class WebResearchV10Activity : AppCompatActivity() {
@@ -63,13 +60,11 @@ class WebResearchV10Activity : AppCompatActivity() {
     private lateinit var bookmarkSpinner: Spinner
     private lateinit var bookmarkAdapter: ArrayAdapter<String>
     private val archive = ResearchArchive()
-    private val downloadingScripts = ConcurrentHashMap.newKeySet<String>()
-    private val downloadingResources = ConcurrentHashMap.newKeySet<String>()
+    private lateinit var resourceCapture: WebResourceCapture
     private val scriptChunks = ConcurrentHashMap<String, MutableMap<Int, String>>()
     private val artifactChunks = ConcurrentHashMap<String, MutableMap<Int, String>>()
     private val bookmarks = mutableListOf<String>()
     private lateinit var userAgent: String
-    private val captureExecutor = Executors.newFixedThreadPool(2)
     private val badgeUpdatePending = AtomicBoolean(false)
     private val statsHandler = Handler(Looper.getMainLooper())
     private val statsTicker = object : Runnable {
@@ -211,7 +206,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         badge = TextView(this).apply { text = "0 событий"; setTextColor(muted); textSize = 11f; setPadding(dp(4), 0, dp(12), 0) }
         controls.addView(badge)
         controls.addView(compactButton("Очистить") {
-            archive.clear(); downloadingScripts.clear(); downloadingResources.clear(); scriptChunks.clear(); artifactChunks.clear(); updateBadge(); updateStats()
+            archive.clear(); if (::resourceCapture.isInitialized) resourceCapture.clearPending(); scriptChunks.clear(); artifactChunks.clear(); updateBadge(); updateStats()
         })
         controls.addView(compactButton("Экспорт ZIP") { exportZip() })
         bottomScroll.addView(controls)
@@ -232,6 +227,12 @@ class WebResearchV10Activity : AppCompatActivity() {
         web.settings.javaScriptCanOpenWindowsAutomatically = true
         userAgent = web.settings.userAgentString + " WebResearch/10"
         web.settings.userAgentString = userAgent
+        resourceCapture = WebResourceCapture(
+            archive = archive,
+            userAgent = userAgent,
+            record = { addRecord(it) },
+            onChanged = { scheduleBadgeUpdate() }
+        )
         WebView.setWebContentsDebuggingEnabled(true)
         web.addJavascriptInterface(Bridge(this), "EvrasiaResearch")
 
@@ -278,7 +279,7 @@ class WebResearchV10Activity : AppCompatActivity() {
                 request?.let {
                     val url = it.url.toString(); val headers = HashMap(it.requestHeaders)
                     addRecord(JSONObject().put("source", "webview").put("time", System.currentTimeMillis()).put("method", it.method).put("url", url).put("headers", JSONObject(headers)))
-                    if (it.method.equals("GET", true) && (url.startsWith("http://") || url.startsWith("https://")) && shouldAutoCopyResource(url, headers)) captureResource(url, headers, "auto-static")
+                    if (it.method.equals("GET", true) && (url.startsWith("http://") || url.startsWith("https://")) && resourceCapture.shouldAutoCopyResource(url, headers)) resourceCapture.captureResource(url, headers, "auto-static")
                 }
                 return super.shouldInterceptRequest(view, request)
             }
@@ -367,79 +368,8 @@ class WebResearchV10Activity : AppCompatActivity() {
         }.trimEnd()
     }
 
-    private fun looksLikeJs(url: String): Boolean {
-        val clean = url.substringBefore('#').substringBefore('?').lowercase(Locale.US)
-        return clean.endsWith(".js") || clean.endsWith(".mjs")
-    }
-
-    private fun headerValue(headers: Map<String, String>, name: String): String =
-        headers.entries.firstOrNull { it.key.equals(name, true) }?.value.orEmpty()
-
-    private fun shouldAutoCopyResource(url: String, headers: Map<String, String>): Boolean {
-        val clean = url.substringBefore('#').substringBefore('?').lowercase(Locale.US)
-        val staticExt = listOf(".js", ".mjs", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf")
-        if (staticExt.any { clean.endsWith(it) }) return true
-        val destination = headerValue(headers, "Sec-Fetch-Dest").lowercase(Locale.US)
-        if (destination in setOf("script", "style", "image", "font")) return true
-        val accept = headerValue(headers, "Accept").lowercase(Locale.US)
-        return accept.contains("image/") || accept.contains("font/") || accept.contains("text/css") || accept.contains("javascript")
-    }
-
-    fun requestResourceCopy(url: String, headersJson: JSONObject?): Boolean {
-        if (!(url.startsWith("http://") || url.startsWith("https://"))) return false
-        val headers = linkedMapOf<String, String>()
-        if (headersJson != null) {
-            val keys = headersJson.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
-                headers[key] = headersJson.optString(key, "")
-            }
-        }
-        captureResource(url, headers, "manual-fallback")
-        return true
-    }
-
-    private fun openConnection(url: String, headers: Map<String, String>): HttpURLConnection {
-        val c = URL(url).openConnection() as HttpURLConnection
-        c.instanceFollowRedirects = true; c.connectTimeout = 15000; c.readTimeout = 45000; c.requestMethod = "GET"
-        headers.forEach { (k, v) -> if (!k.equals("Host", true) && !k.equals("Content-Length", true)) try { c.setRequestProperty(k, v) } catch (_: Exception) {} }
-        CookieManager.getInstance().getCookie(url)?.let { c.setRequestProperty("Cookie", it) }
-        c.setRequestProperty("User-Agent", userAgent)
-        return c
-    }
-
-    private fun captureResource(url: String, headers: Map<String, String>, copyMode: String) {
-        if (archive.resources.containsKey(url) || !downloadingResources.add(url)) return
-        captureExecutor.execute {
-            try {
-                val c = openConnection(url, headers); val started = System.currentTimeMillis(); val status = c.responseCode
-                val bytes = (if (status in 200..399) c.inputStream else c.errorStream)?.use { it.readBytes() } ?: ByteArray(0)
-                val responseHeaders = JSONObject(); c.headerFields.filterKeys { it != null }.forEach { (k, v) -> responseHeaders.put(k, v.joinToString(", ")) }
-                val finalUrl = c.url.toString(); val contentType = c.contentType ?: ""
-                val resourceMeta = JSONObject().put("status", status).put("contentType", contentType).put("finalUrl", finalUrl).put("responseHeaders", responseHeaders).put("copyMode", copyMode)
-                archive.putResource(url, bytes, resourceMeta)
-                if (looksLikeJs(url) || contentType.contains("javascript", true)) archive.putScript(url, bytes)
-                addRecord(JSONObject().put("source", "resource-copy").put("copyMode", copyMode).put("time", started).put("duration", System.currentTimeMillis() - started).put("method", "GET").put("url", url).put("status", status).put("responseHeaders", responseHeaders).put("mimeType", contentType).put("responseSize", bytes.size).put("redirectURL", if (finalUrl != url) finalUrl else ""))
-                c.disconnect()
-            } catch (e: Exception) {
-                archive.putResourceMeta(url, JSONObject().put("error", e.toString()).put("copyMode", copyMode))
-                addRecord(JSONObject().put("source", "resource-copy").put("copyMode", copyMode).put("time", System.currentTimeMillis()).put("method", "GET").put("url", url).put("error", e.toString()))
-            } finally { downloadingResources.remove(url); scheduleBadgeUpdate() }
-        }
-    }
-
-    private fun captureExternalScript(url: String, headers: Map<String, String>) {
-        if (url.startsWith("blob:") || url.startsWith("data:") || archive.scripts.containsKey(url) || !downloadingScripts.add(url)) return
-        captureExecutor.execute {
-            try {
-                val c = openConnection(url, headers); val status = c.responseCode
-                val bytes = (if (status in 200..399) c.inputStream else c.errorStream)?.use { it.readBytes() }
-                if (bytes != null) archive.putScript(url, bytes) else archive.putScriptError(url, "HTTP $status: empty body")
-                c.disconnect()
-            } catch (e: Exception) { archive.putScriptError(url, e.toString()) }
-            finally { downloadingScripts.remove(url); scheduleBadgeUpdate() }
-        }
-    }
+    fun requestResourceCopy(url: String, headersJson: JSONObject?): Boolean =
+        if (::resourceCapture.isInitialized) resourceCapture.requestResourceCopy(url, headersJson) else false
 
     fun ensureInstrumentation() {
         if (!::web.isInitialized) return
@@ -588,7 +518,7 @@ class WebResearchV10Activity : AppCompatActivity() {
 
     override fun onDestroy() {
         statsHandler.removeCallbacks(statsTicker)
-        captureExecutor.shutdownNow()
+        if (::resourceCapture.isInitialized) resourceCapture.shutdown()
         super.onDestroy()
     }
 
@@ -597,7 +527,7 @@ class WebResearchV10Activity : AppCompatActivity() {
     inner class Bridge(private val context: Context) {
         @JavascriptInterface fun record(json: String) { try { addRecord(JSONObject(json)) } catch (_: Exception) {} }
         @JavascriptInterface fun snapshot(json: String) { try { archive.updateSnapshot(JSONObject(json)); runOnUiThread { updateStats() } } catch (_: Exception) {} }
-        @JavascriptInterface fun externalScript(url: String) { if (url.isNotBlank()) captureExternalScript(url, emptyMap()) }
+        @JavascriptInterface fun externalScript(url: String) { if (url.isNotBlank() && ::resourceCapture.isInitialized) resourceCapture.captureExternalScript(url, emptyMap()) }
         @JavascriptInterface fun requestSnapshot() { runOnUiThread { capturePageSnapshot() } }
         @JavascriptInterface fun scriptChunk(url: String, index: Int, total: Int, chunk: String) { collectChunk(url, index, total, chunk, true) }
         @JavascriptInterface fun artifactChunk(key: String, index: Int, total: Int, chunk: String) { collectChunk(key, index, total, chunk, false) }
