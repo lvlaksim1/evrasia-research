@@ -1,0 +1,63 @@
+name: Refactor stage 5 cookie cleanup
+on:
+  push:
+    branches: [refactor-stage5-v55]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[stage5-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor-stage5-v55
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Rename cookie components
+        shell: bash
+        run: |
+          mv app/src/main/java/ru/evrasia/research/CookieTraceV47Provider.kt app/src/main/java/ru/evrasia/research/CookieTraceProvider.kt
+          mv app/src/main/java/ru/evrasia/research/CookieTraceV48UiProvider.kt app/src/main/java/ru/evrasia/research/CookieTraceUiProvider.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          files = [
+              Path('app/src/main/java/ru/evrasia/research/CookieTraceProvider.kt'),
+              Path('app/src/main/java/ru/evrasia/research/CookieTraceUiProvider.kt'),
+              Path('app/src/main/AndroidManifest.xml'),
+          ]
+          for p in files:
+              s = p.read_text()
+              s = s.replace('CookieTraceV47Provider', 'CookieTraceProvider')
+              s = s.replace('CookieTraceV48UiProvider', 'CookieTraceUiProvider')
+              s = s.replace('__WR_COOKIE_TRACE_V47', '__WR_COOKIE_TRACE')
+              s = s.replace('__wrCookieTraceV47', '__wrCookieTrace')
+              p.write_text(s)
+          PY
+      - name: Verify cookie cleanup
+        shell: bash
+        run: |
+          ! grep -R "CookieTraceV47\|CookieTraceV48\|__WR_COOKIE_TRACE_V47\|__wrCookieTraceV47" -n app/src/main
+          test -f app/src/main/java/ru/evrasia/research/CookieTraceProvider.kt
+          test -f app/src/main/java/ru/evrasia/research/CookieTraceUiProvider.kt
+          ! test -e app/src/main/java/ru/evrasia/research/CookieTraceV47Provider.kt
+          ! test -e app/src/main/java/ru/evrasia/research/CookieTraceV48UiProvider.kt
+      - name: Build APK
+        env:
+          WEB_RESEARCH_VERSION: v55-refactor-check
+        run: gradle :app:assembleDebug
+      - name: Commit validated refactor
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/refactor-stage5-cookie.yml
+          git add -A app/src/main
+          git commit -m "refactor: remove versioned cookie component names [stage5-applied]"
+          git push origin HEAD:refactor-stage5-v55
