@@ -21,7 +21,9 @@ jobs:
         with:
           gradle-version: '8.9'
       - name: Apply refactor
-        run: python3 tools/refactor_stage6.py
+        run: |
+          python3 tools/refactor_stage6.py
+          python3 tools/refactor_stage6_fix.py
       - name: Verify repository ownership
         shell: bash
         run: |
