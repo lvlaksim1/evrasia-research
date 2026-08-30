@@ -18,7 +18,6 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -41,14 +40,13 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 class WebResearchV10Activity : AppCompatActivity() {
     internal fun researchWebView(): WebView? = if (::web.isInitialized) web else null
     internal fun researchArchive(): ResearchArchive = archive
     internal fun researchUserAgent(): String = if (::userAgent.isInitialized) userAgent else ""
-    internal fun captureResearchSnapshot() = capturePageSnapshot()
+    internal fun captureResearchSnapshot() { if (::captureController.isInitialized) captureController.capturePageSnapshot() }
 
     private lateinit var web: WebView
     private lateinit var swipeRefresh: SwipeRefreshLayout
@@ -60,9 +58,7 @@ class WebResearchV10Activity : AppCompatActivity() {
     private lateinit var bookmarkSpinner: Spinner
     private lateinit var bookmarkAdapter: ArrayAdapter<String>
     private val archive = ResearchArchive()
-    private lateinit var resourceCapture: WebResourceCapture
-    private val scriptChunks = ConcurrentHashMap<String, MutableMap<Int, String>>()
-    private val artifactChunks = ConcurrentHashMap<String, MutableMap<Int, String>>()
+    private lateinit var captureController: WebCaptureController
     private val bookmarks = mutableListOf<String>()
     private lateinit var userAgent: String
     private val badgeUpdatePending = AtomicBoolean(false)
@@ -206,7 +202,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         badge = TextView(this).apply { text = "0 событий"; setTextColor(muted); textSize = 11f; setPadding(dp(4), 0, dp(12), 0) }
         controls.addView(badge)
         controls.addView(compactButton("Очистить") {
-            archive.clear(); if (::resourceCapture.isInitialized) resourceCapture.clearPending(); scriptChunks.clear(); artifactChunks.clear(); updateBadge(); updateStats()
+            archive.clear(); if (::captureController.isInitialized) captureController.clearPending(); updateBadge(); updateStats()
         })
         controls.addView(compactButton("Экспорт ZIP") { exportZip() })
         bottomScroll.addView(controls)
@@ -227,14 +223,17 @@ class WebResearchV10Activity : AppCompatActivity() {
         web.settings.javaScriptCanOpenWindowsAutomatically = true
         userAgent = web.settings.userAgentString + " WebResearch/10"
         web.settings.userAgentString = userAgent
-        resourceCapture = WebResourceCapture(
+        captureController = WebCaptureController(
+            activity = this,
+            web = web,
             archive = archive,
             userAgent = userAgent,
             record = { addRecord(it) },
-            onChanged = { scheduleBadgeUpdate() }
+            onChanged = { scheduleBadgeUpdate() },
+            onSnapshot = { runOnUiThread { updateStats() } }
         )
         WebView.setWebContentsDebuggingEnabled(true)
-        web.addJavascriptInterface(Bridge(this), "EvrasiaResearch")
+        web.addJavascriptInterface(captureController.bridge, "EvrasiaResearch")
 
         web.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(message: ConsoleMessage): Boolean {
@@ -265,21 +264,21 @@ class WebResearchV10Activity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = false
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
-                statsHandler.postDelayed({ ensureInstrumentation() }, 100)
-                statsHandler.postDelayed({ ensureInstrumentation() }, 350)
+                statsHandler.postDelayed({ captureController.ensureInstrumentation() }, 100)
+                statsHandler.postDelayed({ captureController.ensureInstrumentation() }, 350)
             }
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
                 if (::swipeRefresh.isInitialized) swipeRefresh.isRefreshing = false
                 address.setText(url)
                 addRecord(JSONObject().put("source", "navigation").put("time", System.currentTimeMillis()).put("url", url).put("page", url).put("method", "GET"))
-                ensureInstrumentation(); captureLightPageSnapshot(); updateStats()
+                captureController.ensureInstrumentation(); captureController.captureLightPageSnapshot(); updateStats()
             }
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): android.webkit.WebResourceResponse? {
                 request?.let {
                     val url = it.url.toString(); val headers = HashMap(it.requestHeaders)
                     addRecord(JSONObject().put("source", "webview").put("time", System.currentTimeMillis()).put("method", it.method).put("url", url).put("headers", JSONObject(headers)))
-                    if (it.method.equals("GET", true) && (url.startsWith("http://") || url.startsWith("https://")) && resourceCapture.shouldAutoCopyResource(url, headers)) resourceCapture.captureResource(url, headers, "auto-static")
+                    if (it.method.equals("GET", true) && (url.startsWith("http://") || url.startsWith("https://")) && captureController.shouldAutoCopyResource(url, headers)) captureController.captureResource(url, headers, "auto-static")
                 }
                 return super.shouldInterceptRequest(view, request)
             }
@@ -369,23 +368,14 @@ class WebResearchV10Activity : AppCompatActivity() {
     }
 
     fun requestResourceCopy(url: String, headersJson: JSONObject?): Boolean =
-        if (::resourceCapture.isInitialized) resourceCapture.requestResourceCopy(url, headersJson) else false
+        if (::captureController.isInitialized) captureController.requestResourceCopy(url, headersJson) else false
 
     fun ensureInstrumentation() {
-        if (!::web.isInitialized) return
-        web.evaluateJavascript(WebResearchScripts.instrumentation(), null)
-    }
-
-    private fun captureLightPageSnapshot() {
-        if (!::web.isInitialized) return
-        val nativeCookies = CookieManager.getInstance().getCookie(web.url ?: "") ?: ""
-        web.evaluateJavascript(WebResearchScripts.lightSnapshot(nativeCookies), null)
+        if (::captureController.isInitialized) captureController.ensureInstrumentation()
     }
 
     private fun capturePageSnapshot() {
-        if (!::web.isInitialized) return
-        val nativeCookies = CookieManager.getInstance().getCookie(web.url ?: "") ?: ""
-        web.evaluateJavascript(WebResearchScripts.fullSnapshot(nativeCookies), null)
+        if (::captureController.isInitialized) captureController.capturePageSnapshot()
     }
 
     private fun addRecord(record: JSONObject) { archive.addRecord(record); scheduleBadgeUpdate() }
@@ -425,30 +415,9 @@ class WebResearchV10Activity : AppCompatActivity() {
 
     override fun onDestroy() {
         statsHandler.removeCallbacks(statsTicker)
-        if (::resourceCapture.isInitialized) resourceCapture.shutdown()
+        if (::captureController.isInitialized) captureController.shutdown()
         super.onDestroy()
     }
 
     override fun onBackPressed() { if (web.canGoBack()) web.goBack() else super.onBackPressed() }
-
-    inner class Bridge(private val context: Context) {
-        @JavascriptInterface fun record(json: String) { try { addRecord(JSONObject(json)) } catch (_: Exception) {} }
-        @JavascriptInterface fun snapshot(json: String) { try { archive.updateSnapshot(JSONObject(json)); runOnUiThread { updateStats() } } catch (_: Exception) {} }
-        @JavascriptInterface fun externalScript(url: String) { if (url.isNotBlank() && ::resourceCapture.isInitialized) resourceCapture.captureExternalScript(url, emptyMap()) }
-        @JavascriptInterface fun requestSnapshot() { runOnUiThread { capturePageSnapshot() } }
-        @JavascriptInterface fun scriptChunk(url: String, index: Int, total: Int, chunk: String) { collectChunk(url, index, total, chunk, true) }
-        @JavascriptInterface fun artifactChunk(key: String, index: Int, total: Int, chunk: String) { collectChunk(key, index, total, chunk, false) }
-    }
-
-    private fun collectChunk(key: String, index: Int, total: Int, chunk: String, script: Boolean) {
-        try {
-            val all = if (script) scriptChunks else artifactChunks
-            val map = all.getOrPut(key) { ConcurrentHashMap() }; map[index] = chunk
-            if (map.size == total) {
-                val out = StringBuilder(); for (i in 0 until total) out.append(map[i] ?: "")
-                if (script) archive.putScript(key, out.toString().toByteArray(Charsets.UTF_8)) else archive.putArtifact(key, out.toString().toByteArray(Charsets.UTF_8))
-                all.remove(key); scheduleBadgeUpdate()
-            }
-        } catch (e: Exception) { if (script) archive.putScriptError(key, e.toString()) }
-    }
 }
