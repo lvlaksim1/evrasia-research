@@ -1,0 +1,42 @@
+name: Validate refactor stage14
+on:
+  push:
+    branches: [refactor-stage14-v66]
+permissions:
+  contents: write
+jobs:
+  validate:
+    if: ${{ !contains(github.event.head_commit.message, '[stage14-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Apply architecture audit
+        run: python tools/refactor_stage14.py
+      - name: Verify architecture boundary
+        shell: bash
+        run: |
+          test -f app/src/main/java/ru/evrasia/research/NetworkRecordPipeline.kt
+          grep -q 'NetworkRecordPipeline.appendRawAndDebug' app/src/main/java/ru/evrasia/research/ResearchArchive.kt
+          grep -q 'NetworkRecordPipeline.addDebuggerOnly' app/src/main/java/ru/evrasia/research/ResearchArchive.kt
+          grep -q 'NetworkRecordPipeline.clearDebugger' app/src/main/java/ru/evrasia/research/ResearchArchive.kt
+          grep -q 'rawRecords.put(record)' app/src/main/java/ru/evrasia/research/NetworkRecordPipeline.kt
+          grep -q 'NetworkDebugStore.add(record)' app/src/main/java/ru/evrasia/research/NetworkRecordPipeline.kt
+          grep -q 'Stage 16 — v66' REFACTORING.md
+          grep -q 'raw-events.json' REFACTORING.md
+      - name: Build APK
+        run: gradle :app:assembleDebug
+      - name: Commit validated architecture audit
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/src/main/java/ru/evrasia/research/ResearchArchive.kt app/src/main/java/ru/evrasia/research/NetworkRecordPipeline.kt REFACTORING.md
+          git commit -m 'refactor: finalize capture architecture boundaries [stage14-applied]'
+          git push
