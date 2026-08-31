@@ -23,14 +23,13 @@ class ResearchArchive {
     @Volatile var snapshot = JSONObject()
 
     @Synchronized fun addRecord(record: JSONObject) {
-        records.put(record)
-        NetworkDebugStore.add(record)
+        NetworkRecordPipeline.appendRawAndDebug(records, record)
     }
 
     fun putScript(url: String, bytes: ByteArray) {
         val previous = scripts.put(url, bytes)
         if (previous == null && isInlineScript(url)) {
-            NetworkDebugStore.add(JSONObject()
+            NetworkRecordPipeline.addDebuggerOnly(JSONObject()
                 .put("source", "js-file")
                 .put("time", System.currentTimeMillis())
                 .put("method", "JS")
@@ -73,7 +72,7 @@ class ResearchArchive {
         resourceMeta.clear()
         extraArtifacts.clear()
         snapshot = JSONObject()
-        NetworkDebugStore.clear()
+        NetworkRecordPipeline.clearDebugger()
     }
 
     fun writeZip(output: OutputStream, pageUrl: String) {
