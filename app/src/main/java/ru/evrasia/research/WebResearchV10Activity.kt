@@ -52,25 +52,15 @@ class WebResearchV10Activity : AppCompatActivity() {
     private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var address: EditText
     private lateinit var badge: TextView
-    private lateinit var stats: TextView
-    private lateinit var statsPanel: LinearLayout
-    private lateinit var statsHeader: Button
     private lateinit var bookmarkSpinner: Spinner
-    private lateinit var bookmarkAdapter: ArrayAdapter<String>
+    private lateinit var navigationController: WebNavigationController
+    private lateinit var bookmarkController: WebBookmarkController
+    private lateinit var statsController: WebCookieStatsController
     private val archive = ResearchArchive()
     private lateinit var captureController: WebCaptureController
-    private val bookmarks = mutableListOf<String>()
     private lateinit var userAgent: String
     private val badgeUpdatePending = AtomicBoolean(false)
-    private val statsHandler = Handler(Looper.getMainLooper())
-    private val statsTicker = object : Runnable {
-        override fun run() {
-            if (::statsPanel.isInitialized && statsPanel.visibility == View.VISIBLE) {
-                updateStats()
-                statsHandler.postDelayed(this, 500)
-            }
-        }
-    }
+    private val uiHandler = Handler(Looper.getMainLooper())
 
     private val bg = Color.rgb(6, 14, 12)
     private val panel = Color.rgb(14, 29, 24)
@@ -122,10 +112,10 @@ class WebResearchV10Activity : AppCompatActivity() {
             setPadding(dp(12), dp(8), dp(12), dp(8))
             setText("https://evrasia.rest/")
             setOnEditorActionListener { _, actionId, _ ->
-                if (actionId == EditorInfo.IME_ACTION_GO) { navigate(text.toString()); true } else false
+                if (actionId == EditorInfo.IME_ACTION_GO) { navigationController.navigate(text.toString()); true } else false
             }
         }
-        val go = actionButton("→") { navigate(address.text.toString()) }
+        val go = actionButton("→") { navigationController.navigate(address.text.toString()) }
         nav.addView(address, LinearLayout.LayoutParams(0, dp(46), 1f))
         nav.addView(go, LinearLayout.LayoutParams(dp(52), dp(46)).apply { marginStart = dp(8) })
         navCard.addView(nav)
@@ -136,20 +126,23 @@ class WebResearchV10Activity : AppCompatActivity() {
         bookmarkCard.addView(bookmarkTitle)
         val bookmarkRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, 0) }
         bookmarkSpinner = Spinner(this)
-        bookmarkAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, bookmarks)
-        bookmarkSpinner.adapter = bookmarkAdapter
-        val openBookmark = compactButton("Открыть") { if (bookmarks.isNotEmpty()) navigate(bookmarks[bookmarkSpinner.selectedItemPosition]) }
-        val saveBookmark = compactButton("★") { saveBookmark(address.text.toString()) }
-        val deleteBookmark = compactButton("−") { deleteSelectedBookmark() }
+        bookmarkController = WebBookmarkController(
+            activity = this,
+            normalizeUrl = { raw -> navigationController.normalizeUrl(raw) },
+            onOpen = { url -> navigationController.navigate(url) }
+        )
+        bookmarkController.bind(bookmarkSpinner)
+        val openBookmark = compactButton("Открыть") { bookmarkController.openSelected() }
+        val saveBookmark = compactButton("★") { bookmarkController.save(address.text.toString()) }
+        val deleteBookmark = compactButton("−") { bookmarkController.deleteSelected() }
         bookmarkRow.addView(bookmarkSpinner, LinearLayout.LayoutParams(0, dp(44), 1f))
         bookmarkRow.addView(openBookmark)
         bookmarkRow.addView(saveBookmark)
         bookmarkRow.addView(deleteBookmark)
         bookmarkCard.addView(bookmarkRow)
         root.addView(bookmarkCard, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(12), 0, dp(12), dp(8)) })
-        loadBookmarks()
 
-        statsHeader = Button(this).apply {
+        val statsHeader = Button(this).apply {
             text = "Куки  ▾"
             setTextColor(text)
             textSize = 14f
@@ -157,11 +150,11 @@ class WebResearchV10Activity : AppCompatActivity() {
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
             background = rounded(panel, 16f, Color.rgb(37, 62, 51))
             setPadding(dp(14), 0, dp(14), 0)
-            setOnClickListener { toggleStats() }
+            setOnClickListener { if (::statsController.isInitialized) statsController.toggle() }
         }
         root.addView(statsHeader, LinearLayout.LayoutParams(-1, dp(46)).apply { setMargins(dp(12), 0, dp(12), dp(6)) })
 
-        statsPanel = card().apply {
+        val statsPanel = card().apply {
             visibility = View.GONE
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -173,9 +166,9 @@ class WebResearchV10Activity : AppCompatActivity() {
             textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        statsTop.addView(compactButton("Копировать") { copyStats() })
+        statsTop.addView(compactButton("Копировать") { if (::statsController.isInitialized) statsController.copy() })
         statsPanel.addView(statsTop)
-        stats = TextView(this).apply {
+        val stats = TextView(this).apply {
             setTextColor(text)
             textSize = 12f
             setTextIsSelectable(true)
@@ -183,6 +176,13 @@ class WebResearchV10Activity : AppCompatActivity() {
         }
         statsPanel.addView(stats)
         root.addView(statsPanel, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(12), 0, dp(12), dp(8)) })
+        statsController = WebCookieStatsController(
+            activity = this,
+            header = statsHeader,
+            panel = statsPanel,
+            textView = stats,
+            pageProvider = { if (::web.isInitialized) web.url ?: address.text?.toString().orEmpty() else address.text?.toString().orEmpty() }
+        )
 
         web = WebView(this).apply { setBackgroundColor(Color.WHITE) }
         swipeRefresh = SwipeRefreshLayout(this).apply {
@@ -191,7 +191,7 @@ class WebResearchV10Activity : AppCompatActivity() {
             setOnChildScrollUpCallback { _, _ -> web.canScrollVertically(-1) }
             setOnRefreshListener {
                 web.reload()
-                statsHandler.postDelayed({ if (::swipeRefresh.isInitialized) swipeRefresh.isRefreshing = false }, 15000)
+                uiHandler.postDelayed({ if (::swipeRefresh.isInitialized) swipeRefresh.isRefreshing = false }, 15000)
             }
             addView(web, android.view.ViewGroup.LayoutParams(-1, -1))
         }
@@ -202,7 +202,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         badge = TextView(this).apply { text = "0 событий"; setTextColor(muted); textSize = 11f; setPadding(dp(4), 0, dp(12), 0) }
         controls.addView(badge)
         controls.addView(compactButton("Очистить") {
-            archive.clear(); if (::captureController.isInitialized) captureController.clearPending(); updateBadge(); updateStats()
+            archive.clear(); if (::captureController.isInitialized) captureController.clearPending(); updateBadge(); if (::statsController.isInitialized) statsController.update()
         })
         controls.addView(compactButton("Экспорт ZIP") { exportZip() })
         bottomScroll.addView(controls)
@@ -223,6 +223,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         web.settings.javaScriptCanOpenWindowsAutomatically = true
         userAgent = web.settings.userAgentString + " WebResearch/10"
         web.settings.userAgentString = userAgent
+        navigationController = WebNavigationController(this, web, address) { addRecord(it) }
         captureController = WebCaptureController(
             activity = this,
             web = web,
@@ -230,7 +231,7 @@ class WebResearchV10Activity : AppCompatActivity() {
             userAgent = userAgent,
             record = { addRecord(it) },
             onChanged = { scheduleBadgeUpdate() },
-            onSnapshot = { runOnUiThread { updateStats() } }
+            onSnapshot = { runOnUiThread { if (::statsController.isInitialized) statsController.update() } }
         )
         WebView.setWebContentsDebuggingEnabled(true)
         web.addJavascriptInterface(captureController.bridge, "EvrasiaResearch")
@@ -247,10 +248,10 @@ class WebResearchV10Activity : AppCompatActivity() {
                 temp.settings.javaScriptEnabled = true
                 temp.webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
-                        openInActiveWindow(request.url.toString()); temp.destroy(); return true
+                        navigationController.openInActiveWindow(request.url.toString()); temp.destroy(); return true
                     }
                     override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
-                        if (url != "about:blank") { openInActiveWindow(url); temp.stopLoading(); temp.destroy() }
+                        if (url != "about:blank") { navigationController.openInActiveWindow(url); temp.stopLoading(); temp.destroy() }
                     }
                 }
                 val transport = resultMsg.obj as WebView.WebViewTransport
@@ -264,15 +265,15 @@ class WebResearchV10Activity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = false
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
-                statsHandler.postDelayed({ captureController.ensureInstrumentation() }, 100)
-                statsHandler.postDelayed({ captureController.ensureInstrumentation() }, 350)
+                uiHandler.postDelayed({ captureController.ensureInstrumentation() }, 100)
+                uiHandler.postDelayed({ captureController.ensureInstrumentation() }, 350)
             }
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
                 if (::swipeRefresh.isInitialized) swipeRefresh.isRefreshing = false
                 address.setText(url)
                 addRecord(JSONObject().put("source", "navigation").put("time", System.currentTimeMillis()).put("url", url).put("page", url).put("method", "GET"))
-                captureController.ensureInstrumentation(); captureController.captureLightPageSnapshot(); updateStats()
+                captureController.ensureInstrumentation(); captureController.captureLightPageSnapshot(); if (::statsController.isInitialized) statsController.update()
             }
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): android.webkit.WebResourceResponse? {
                 request?.let {
@@ -283,7 +284,7 @@ class WebResearchV10Activity : AppCompatActivity() {
                 return super.shouldInterceptRequest(view, request)
             }
         }
-        navigate("https://evrasia.rest/")
+        navigationController.navigate("https://evrasia.rest/")
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -296,75 +297,6 @@ class WebResearchV10Activity : AppCompatActivity() {
     }
     private fun compactButton(label: String, click: () -> Unit) = Button(this).apply {
         text = label; setTextColor(text); textSize = 11f; isAllCaps = false; minWidth = 0; minimumWidth = 0; setPadding(dp(10), 0, dp(10), 0); background = rounded(panel2, 12f, Color.rgb(50, 76, 65)); setOnClickListener { click() }
-    }
-
-    private fun toggleStats() {
-        val show = statsPanel.visibility != View.VISIBLE
-        statsPanel.visibility = if (show) View.VISIBLE else View.GONE
-        statsHeader.text = if (show) "Куки  ▴" else "Куки  ▾"
-        statsHandler.removeCallbacks(statsTicker)
-        if (show) { updateStats(); statsHandler.post(statsTicker) }
-    }
-
-    private fun copyStats() {
-        val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        manager.setPrimaryClip(ClipData.newPlainText("web research statistics", stats.text ?: ""))
-        Toast.makeText(this, "Статистика скопирована", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun normalizeUrl(raw: String): String {
-        val value = raw.trim()
-        if (value.isBlank()) return "https://evrasia.rest/"
-        return if (value.startsWith("http://") || value.startsWith("https://")) value else "https://$value"
-    }
-
-    private fun navigate(raw: String) {
-        val url = normalizeUrl(raw)
-        address.setText(url)
-        web.loadUrl(url)
-    }
-
-    private fun openInActiveWindow(url: String) {
-        runOnUiThread { navigate(url) }
-        addRecord(JSONObject().put("source", "new-window").put("time", System.currentTimeMillis()).put("url", url).put("method", "GET"))
-    }
-
-    private fun loadBookmarks() {
-        bookmarks.clear()
-        val saved = getSharedPreferences("web-research", Context.MODE_PRIVATE).getStringSet("bookmarks", emptySet()) ?: emptySet()
-        bookmarks.addAll(saved.sorted())
-        bookmarkAdapter.notifyDataSetChanged()
-    }
-
-    private fun saveBookmark(raw: String) {
-        val url = normalizeUrl(raw)
-        if (!bookmarks.contains(url)) bookmarks.add(url)
-        bookmarks.sort(); bookmarkAdapter.notifyDataSetChanged()
-        getSharedPreferences("web-research", Context.MODE_PRIVATE).edit().putStringSet("bookmarks", bookmarks.toSet()).apply()
-        bookmarkSpinner.setSelection(bookmarks.indexOf(url).coerceAtLeast(0))
-        Toast.makeText(this, "Закладка сохранена", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun deleteSelectedBookmark() {
-        if (bookmarks.isEmpty()) return
-        bookmarks.removeAt(bookmarkSpinner.selectedItemPosition)
-        bookmarkAdapter.notifyDataSetChanged()
-        getSharedPreferences("web-research", Context.MODE_PRIVATE).edit().putStringSet("bookmarks", bookmarks.toSet()).apply()
-    }
-
-    private fun updateStats() {
-        if (!::stats.isInitialized || !::web.isInitialized) return
-        val page = web.url ?: address.text?.toString().orEmpty()
-        val raw = CookieManager.getInstance().getCookie(page).orEmpty()
-        val cookies = raw.split(';').map { it.trim() }.filter { it.isNotBlank() }
-        stats.text = buildString {
-            append("Страница: ").append(page.ifBlank { "—" })
-            append("\nКуки текущей сессии: ").append(cookies.size)
-            if (cookies.isNotEmpty()) {
-                append("\n\n")
-                cookies.forEachIndexed { i, c -> append(i + 1).append(". ").append(c).append('\n') }
-            }
-        }.trimEnd()
     }
 
     fun requestResourceCopy(url: String, headersJson: JSONObject?): Boolean =
@@ -382,7 +314,7 @@ class WebResearchV10Activity : AppCompatActivity() {
 
     private fun scheduleBadgeUpdate() {
         if (!badgeUpdatePending.compareAndSet(false, true)) return
-        statsHandler.postDelayed({
+        uiHandler.postDelayed({
             badgeUpdatePending.set(false)
             if (::badge.isInitialized && !isFinishing) updateBadge()
         }, 250)
@@ -405,16 +337,16 @@ class WebResearchV10Activity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::statsPanel.isInitialized && statsPanel.visibility == View.VISIBLE) { statsHandler.removeCallbacks(statsTicker); statsHandler.post(statsTicker) }
+        if (::statsController.isInitialized) statsController.onResume()
     }
 
     override fun onPause() {
-        statsHandler.removeCallbacks(statsTicker)
+        if (::statsController.isInitialized) statsController.onPause()
         super.onPause()
     }
 
     override fun onDestroy() {
-        statsHandler.removeCallbacks(statsTicker)
+        if (::statsController.isInitialized) statsController.destroy()
         if (::captureController.isInitialized) captureController.shutdown()
         super.onDestroy()
     }
