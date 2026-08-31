@@ -12,7 +12,6 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.text.InputType
 import android.text.Spannable
 import android.text.SpannableString
 import android.text.style.BackgroundColorSpan
@@ -95,6 +94,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private val displaySourceOrder = listOf("webview","fetch","xhr","resource-timing","resource-copy","replay","fetch-meta","xhr-meta")
     private val typeFilters = listOf("ALL","JSON","HTML","JS","CSS","IMG","PDF","TEXT","BIN","OTHER")
     private val methodFilters = listOf("ALL","GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD","WS","SSE","OTHER")
+    private val replayController by lazy { NetworkReplayController(this, bg, panel2, line, textColor, muted) }
 
     private val refresh = object : Runnable {
         override fun run() {
@@ -726,43 +726,11 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     }
 
     private fun showReplayEditor(event:JSONObject){
-        val form=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(12),dp(8),dp(12),dp(8));setBackgroundColor(bg)}
-        val methodInput=editor("METHOD",methodOf(event),false)
-        val urlInput=editor("URL",event.optString("url",""),true)
-        val headersInput=editor("HEADERS — по одному Name: Value на строку",formatHeaders(requestHeaderPairs(event)).takeIf{it!="—"}.orEmpty(),true)
-        val bodyInput=editor("BODY",event.optString("requestBody",""),true)
-        form.addView(methodInput.first);form.addView(urlInput.first);form.addView(headersInput.first);form.addView(bodyInput.first)
-        val scroll=ScrollView(this).apply{addView(form)}
-        AlertDialog.Builder(this)
-            .setTitle("Корректировка и повтор запроса")
-            .setView(scroll)
-            .setNegativeButton("Отмена",null)
-            .setPositiveButton("Отправить"){_,_->
-                val headers=parseHeaderLines(headersInput.second.text.toString())
-                val ok=NetworkRequestActions.replay(this,event,methodInput.second.text.toString(),urlInput.second.text.toString().trim(),headers,bodyInput.second.text.toString())
-                Toast.makeText(this,if(ok)"Запрос отправляется" else "Некорректный URL",Toast.LENGTH_SHORT).show()
-            }
-            .show()
-    }
-
-    private fun editor(label:String,value:String,multiline:Boolean):Pair<LinearLayout,EditText>{
-        val box=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(0,dp(4),0,dp(4))}
-        box.addView(subtitle(label))
-        val input=EditText(this).apply{
-            setText(value);setTextColor(textColor);setHintTextColor(muted);textSize=10.5f;typeface=Typeface.MONOSPACE;background=rounded(panel2,9f,line);setPadding(dp(9),dp(7),dp(9),dp(7))
-            if(multiline){inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE;minLines=if(label.startsWith("BODY"))5 else 3;maxLines=12;setHorizontallyScrolling(false)}else{setSingleLine(true)}
-        }
-        box.addView(input,LinearLayout.LayoutParams(-1,-2))
-        return box to input
-    }
-
-    private fun parseHeaderLines(raw:String):Map<String,String>{
-        val out=linkedMapOf<String,String>()
-        raw.lines().forEach{line->
-            val p=line.indexOf(':')
-            if(p>0){val name=line.substring(0,p).trim();if(name.isNotBlank())out[name]=line.substring(p+1).trim()}
-        }
-        return out
+        replayController.show(
+            event = event,
+            method = methodOf(event),
+            headers = formatHeaders(requestHeaderPairs(event)).takeIf { it != "—" }.orEmpty()
+        )
     }
 
     private fun jsonTreeView(rootValue:Any,title:String):View{
