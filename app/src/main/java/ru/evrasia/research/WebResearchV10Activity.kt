@@ -68,7 +68,7 @@ class WebResearchV10Activity : AppCompatActivity() {
     private val panel = Color.rgb(14, 29, 24)
     private val panel2 = Color.rgb(20, 39, 33)
     private val accent = Color.rgb(151, 231, 92)
-    private val text = Color.rgb(238, 245, 241)
+    private val textColor = Color.rgb(238, 245, 241)
     private val muted = Color.rgb(157, 177, 166)
 
     @SuppressLint("SetJavaScriptEnabled", "AddJavascriptInterface")
@@ -88,7 +88,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         }
         hero.addView(TextView(this).apply {
             text = "WEB RESEARCH"
-            setTextColor(text)
+            setTextColor(textColor)
             textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
             letterSpacing = .08f
@@ -106,7 +106,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         address = EditText(this).apply {
             hint = "https://example.com/path"
             setHintTextColor(muted)
-            setTextColor(text)
+            setTextColor(textColor)
             setSingleLine(true)
             imeOptions = EditorInfo.IME_ACTION_GO
             textSize = 14f
@@ -146,7 +146,7 @@ class WebResearchV10Activity : AppCompatActivity() {
 
         val statsHeader = Button(this).apply {
             text = "Куки  ▾"
-            setTextColor(text)
+            setTextColor(textColor)
             textSize = 14f
             isAllCaps = false
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
@@ -171,7 +171,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         statsTop.addView(compactButton("Копировать") { if (::statsController.isInitialized) statsController.copy() })
         statsPanel.addView(statsTop)
         val stats = TextView(this).apply {
-            setTextColor(text)
+            setTextColor(textColor)
             textSize = 12f
             setTextIsSelectable(true)
             setPadding(0, dp(8), 0, 0)
@@ -268,7 +268,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         text = label; setTextColor(Color.rgb(8, 18, 14)); textSize = 22f; isAllCaps = false; background = rounded(accent, 14f); setOnClickListener { click() }
     }
     private fun compactButton(label: String, click: () -> Unit) = Button(this).apply {
-        text = label; setTextColor(text); textSize = 11f; isAllCaps = false; minWidth = 0; minimumWidth = 0; setPadding(dp(10), 0, dp(10), 0); background = rounded(panel2, 12f, Color.rgb(50, 76, 65)); setOnClickListener { click() }
+        text = label; setTextColor(textColor); textSize = 11f; isAllCaps = false; minWidth = 0; minimumWidth = 0; setPadding(dp(10), 0, dp(10), 0); background = rounded(panel2, 12f, Color.rgb(50, 76, 65)); setOnClickListener { click() }
     }
 
     fun requestResourceCopy(url: String, headersJson: JSONObject?): Boolean =
