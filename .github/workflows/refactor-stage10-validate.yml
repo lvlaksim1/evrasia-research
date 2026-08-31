@@ -18,7 +18,9 @@ jobs:
         with:
           gradle-version: '8.9'
       - name: Apply refactor
-        run: python tools/refactor_stage10.py
+        run: |
+          python tools/fix_stage10_patch.py
+          python tools/refactor_stage10.py
       - name: Verify extraction
         shell: bash
         run: |
