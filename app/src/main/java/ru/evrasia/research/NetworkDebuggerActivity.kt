@@ -75,7 +75,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private lateinit var methodSpinner: Spinner
     private lateinit var search: EditText
 
-    private val storeCache = LinkedHashMap<Long, JSONObject>()
+    private val dataSource = NetworkDebuggerDataSource()
     private val allItems = mutableListOf<JSONObject>()
     private val items = mutableListOf<JSONObject>()
     private val domains = mutableListOf<String>()
@@ -236,16 +236,11 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     }
 
     private fun refreshIncremental(force:Boolean=false){
-        val delta = NetworkDebugStore.delta(if(force)-1L else lastRevision)
-        if(!force && delta.revision==lastRevision && delta.events.isEmpty())return
-        if(delta.reset || force)storeCache.clear()
-        delta.events.sortedBy{it.optLong("_storeId",Long.MAX_VALUE)}.forEach{event->
-            val id=event.optLong("_storeId",fallbackId(event))
-            storeCache[id]=event
-        }
-        lastRevision=delta.revision
+        val result = dataSource.refresh(force, lastRevision)
+        if(!result.changed)return
+        lastRevision=result.revision
         allItems.clear()
-        allItems.addAll(storeCache.values.toList().asReversed())
+        allItems.addAll(result.events)
         rebuildDynamicFilters()
         applyFilters()
     }
