@@ -56,6 +56,8 @@ class WebResearchV10Activity : AppCompatActivity() {
     private lateinit var navigationController: WebNavigationController
     private lateinit var bookmarkController: WebBookmarkController
     private lateinit var statsController: WebCookieStatsController
+    private lateinit var webViewController: WebResearchWebViewController
+    private lateinit var exportController: WebResearchExportController
     private val archive = ResearchArchive()
     private lateinit var captureController: WebCaptureController
     private lateinit var userAgent: String
@@ -235,55 +237,25 @@ class WebResearchV10Activity : AppCompatActivity() {
         )
         WebView.setWebContentsDebuggingEnabled(true)
         web.addJavascriptInterface(captureController.bridge, "EvrasiaResearch")
+        exportController = WebResearchExportController(
+            activity = this,
+            archive = archive,
+            web = web,
+            captureSnapshot = { capturePageSnapshot() }
+        )
 
-        web.webChromeClient = object : WebChromeClient() {
-            override fun onConsoleMessage(message: ConsoleMessage): Boolean {
-                addRecord(JSONObject().put("source", "console").put("time", System.currentTimeMillis()).put("level", message.messageLevel().name).put("message", message.message()).put("sourceId", message.sourceId()).put("line", message.lineNumber()))
-                return true
-            }
-
-            override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
-                if (resultMsg == null) return false
-                val temp = WebView(this@WebResearchV10Activity)
-                temp.settings.javaScriptEnabled = true
-                temp.webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
-                        navigationController.openInActiveWindow(request.url.toString()); temp.destroy(); return true
-                    }
-                    override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) {
-                        if (url != "about:blank") { navigationController.openInActiveWindow(url); temp.stopLoading(); temp.destroy() }
-                    }
-                }
-                val transport = resultMsg.obj as WebView.WebViewTransport
-                transport.webView = temp
-                resultMsg.sendToTarget()
-                return true
-            }
-        }
-
-        web.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = false
-            override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-                super.onPageStarted(view, url, favicon)
-                uiHandler.postDelayed({ captureController.ensureInstrumentation() }, 100)
-                uiHandler.postDelayed({ captureController.ensureInstrumentation() }, 350)
-            }
-            override fun onPageFinished(view: WebView, url: String) {
-                super.onPageFinished(view, url)
-                if (::swipeRefresh.isInitialized) swipeRefresh.isRefreshing = false
-                address.setText(url)
-                addRecord(JSONObject().put("source", "navigation").put("time", System.currentTimeMillis()).put("url", url).put("page", url).put("method", "GET"))
-                captureController.ensureInstrumentation(); captureController.captureLightPageSnapshot(); if (::statsController.isInitialized) statsController.update()
-            }
-            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): android.webkit.WebResourceResponse? {
-                request?.let {
-                    val url = it.url.toString(); val headers = HashMap(it.requestHeaders)
-                    addRecord(JSONObject().put("source", "webview").put("time", System.currentTimeMillis()).put("method", it.method).put("url", url).put("headers", JSONObject(headers)))
-                    if (it.method.equals("GET", true) && (url.startsWith("http://") || url.startsWith("https://")) && captureController.shouldAutoCopyResource(url, headers)) captureController.captureResource(url, headers, "auto-static")
-                }
-                return super.shouldInterceptRequest(view, request)
-            }
-        }
+        webViewController = WebResearchWebViewController(
+            activity = this,
+            web = web,
+            swipeRefresh = swipeRefresh,
+            address = address,
+            captureController = captureController,
+            navigationController = navigationController,
+            handler = uiHandler,
+            record = { addRecord(it) },
+            updateStats = { if (::statsController.isInitialized) statsController.update() }
+        )
+        webViewController.install()
         navigationController.navigate("https://evrasia.rest/")
     }
 
@@ -323,16 +295,13 @@ class WebResearchV10Activity : AppCompatActivity() {
     private fun updateBadge() { badge.text = "${archive.records.length()} событий · ${archive.scripts.size} JS · ${archive.resources.size} ресурсов" }
 
     private fun exportZip() {
-        capturePageSnapshot()
-        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "application/zip"; putExtra(Intent.EXTRA_TITLE, "web-research-$stamp.zip") }
-        startActivityForResult(intent, 501)
+        if (::exportController.isInitialized) exportController.start()
     }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 501 && resultCode == RESULT_OK) data?.data?.let { uri -> contentResolver.openOutputStream(uri)?.use { archive.writeZip(it, web.url ?: "") } }
+        if (::exportController.isInitialized) exportController.handleResult(requestCode, resultCode, data)
     }
 
     override fun onResume() {
