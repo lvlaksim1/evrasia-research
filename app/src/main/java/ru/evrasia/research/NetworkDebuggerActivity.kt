@@ -303,7 +303,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             setPadding(dp(2),0,dp(2),0)
         },LinearLayout.LayoutParams(-1,dp(14)))
         spinner.background=rounded(panel2,8f,Color.TRANSPARENT)
-        spinner.popupBackgroundDrawable=rounded(panel,12f,line)
+        spinner.setPopupBackgroundDrawable(rounded(panel,12f,line))
         spinner.dropDownVerticalOffset=dp(4)
         addView(spinner,LinearLayout.LayoutParams(-1,dp(32)))
         layoutParams=LinearLayout.LayoutParams(width,dp(56))
