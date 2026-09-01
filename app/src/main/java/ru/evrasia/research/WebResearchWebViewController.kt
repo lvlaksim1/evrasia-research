@@ -26,6 +26,8 @@ internal class WebResearchWebViewController(
     private val updateStats: () -> Unit
 ) {
     fun install() {
+        WebDownloadController(activity, web, web.settings.userAgentString, record).install()
+
         web.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(message: ConsoleMessage): Boolean {
                 record(JSONObject().put("source", "console").put("time", System.currentTimeMillis()).put("level", message.messageLevel().name).put("message", message.message()).put("sourceId", message.sourceId()).put("line", message.lineNumber()))
