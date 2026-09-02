@@ -35,7 +35,7 @@ internal class WebResearchWebViewController(
 
     fun install() {
         initializeBrowserMode()
-        WebDownloadController(activity, web, record).install()
+        WebDownloadController(activity, web, web.settings.userAgentString, record).install()
 
         web.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(message: ConsoleMessage): Boolean {
