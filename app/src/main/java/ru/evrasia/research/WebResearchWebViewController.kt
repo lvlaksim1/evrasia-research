@@ -124,13 +124,14 @@ internal class WebResearchWebViewController(
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(6), 0, 0)
         }
-        modeMenuButton = menuActionButton(browserModeLabel()) {
+        val modeButton = menuActionButton(browserModeLabel()) {
             toggleBrowserMode()
         }
+        modeMenuButton = modeButton
         val cookieButton = menuActionButton("Удалить куки домена") {
             clearCurrentDomainCookies()
         }
-        row.addView(modeMenuButton, LinearLayout.LayoutParams(0, dp(38), 1f))
+        row.addView(modeButton, LinearLayout.LayoutParams(0, dp(38), 1f))
         row.addView(cookieButton, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(6) })
         bookmarkPanel.addView(row, LinearLayout.LayoutParams(-1, -2))
     }
