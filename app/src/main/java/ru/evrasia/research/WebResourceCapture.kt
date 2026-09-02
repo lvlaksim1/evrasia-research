@@ -10,17 +10,22 @@ import java.util.concurrent.Executors
 
 internal class WebResourceCapture(
     private val archive: ResearchArchive,
-    private val userAgent: String,
+    userAgent: String,
     private val record: (JSONObject) -> Unit,
     private val onChanged: () -> Unit
 ) {
     private val downloadingScripts = ConcurrentHashMap.newKeySet<String>()
     private val downloadingResources = ConcurrentHashMap.newKeySet<String>()
     private val executor = Executors.newFixedThreadPool(2)
+    @Volatile private var currentUserAgent = userAgent
 
     fun clearPending() {
         downloadingScripts.clear()
         downloadingResources.clear()
+    }
+
+    fun updateUserAgent(userAgent: String) {
+        currentUserAgent = userAgent
     }
 
     fun shutdown() {
@@ -71,7 +76,7 @@ internal class WebResourceCapture(
             }
         }
         CookieManager.getInstance().getCookie(url)?.let { connection.setRequestProperty("Cookie", it) }
-        connection.setRequestProperty("User-Agent", userAgent)
+        connection.setRequestProperty("User-Agent", currentUserAgent)
         return connection
     }
 
