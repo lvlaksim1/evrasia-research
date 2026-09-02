@@ -39,7 +39,9 @@ internal class WebDownloadController(
                     setAllowedOverRoaming(true)
                     setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
 
-                    val effectiveUserAgent = suppliedUserAgent?.takeIf { it.isNotBlank() } ?: userAgent
+                    val effectiveUserAgent = suppliedUserAgent?.takeIf { it.isNotBlank() }
+                        ?: web.settings.userAgentString?.takeIf { it.isNotBlank() }
+                        ?: userAgent
                     if (effectiveUserAgent.isNotBlank()) addRequestHeader("User-Agent", effectiveUserAgent)
 
                     val cookies = CookieManager.getInstance().getCookie(url)
