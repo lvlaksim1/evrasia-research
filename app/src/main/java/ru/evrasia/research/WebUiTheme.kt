@@ -8,11 +8,34 @@ import androidx.appcompat.app.AppCompatDelegate
 internal object WebUiTheme {
     const val PREFS = "web-research-ui"
     private const val KEY_THEME = "theme"
+    private const val KEY_ACCENT = "accent"
 
     enum class Mode(val key: String, val label: String) {
         SYSTEM("system", "Системная"),
         LIGHT("light", "Светлая"),
         DARK("dark", "Тёмная")
+    }
+
+    enum class Accent(
+        val key: String,
+        val label: String,
+        private val lightColor: Int,
+        private val darkColor: Int
+    ) {
+        CYAN("cyan", "Бирюзовый", Color.rgb(0, 159, 181), Color.rgb(0, 226, 239)),
+        BLUE("blue", "Синий", Color.rgb(38, 105, 205), Color.rgb(79, 143, 247)),
+        INDIGO("indigo", "Индиго", Color.rgb(75, 76, 189), Color.rgb(114, 120, 245)),
+        PURPLE("purple", "Фиолетовый", Color.rgb(126, 63, 194), Color.rgb(160, 90, 214)),
+        PINK("pink", "Розовый", Color.rgb(190, 45, 105), Color.rgb(217, 79, 139)),
+        RED("red", "Красный", Color.rgb(190, 55, 55), Color.rgb(232, 91, 91)),
+        ORANGE("orange", "Оранжевый", Color.rgb(197, 94, 24), Color.rgb(229, 122, 50)),
+        AMBER("amber", "Янтарный", Color.rgb(166, 111, 13), Color.rgb(199, 139, 40)),
+        GREEN("green", "Зелёный", Color.rgb(45, 130, 76), Color.rgb(74, 166, 107)),
+        TEAL("teal", "Тёмно-бирюзовый", Color.rgb(0, 123, 111), Color.rgb(46, 166, 154)),
+        SLATE("slate", "Серо-синий", Color.rgb(78, 91, 110), Color.rgb(119, 142, 177)),
+        GRAPHITE("graphite", "Графитовый", Color.rgb(82, 86, 92), Color.rgb(126, 132, 141));
+
+        fun color(dark: Boolean): Int = if (dark) darkColor else lightColor
     }
 
     data class Palette(
@@ -36,6 +59,11 @@ internal object WebUiTheme {
         return Mode.entries.firstOrNull { it.key == key } ?: Mode.SYSTEM
     }
 
+    fun savedAccent(context: Context): Accent {
+        val key = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_ACCENT, Accent.CYAN.key)
+        return Accent.entries.firstOrNull { it.key == key } ?: Accent.CYAN
+    }
+
     fun applySaved(context: Context) {
         applyMode(savedMode(context))
     }
@@ -43,6 +71,23 @@ internal object WebUiTheme {
     fun save(context: Context, mode: Mode) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_THEME, mode.key).apply()
         applyMode(mode)
+    }
+
+    fun saveAccent(context: Context, accent: Accent) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_ACCENT, accent.key).apply()
+    }
+
+    fun accentColor(context: Context, accent: Accent = savedAccent(context)): Int {
+        val dark = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        return accent.color(dark)
+    }
+
+    fun contrastText(color: Int): Int {
+        val r = Color.red(color) / 255.0
+        val g = Color.green(color) / 255.0
+        val b = Color.blue(color) / 255.0
+        val luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        return if (luminance > 0.62) Color.rgb(20, 20, 22) else Color.WHITE
     }
 
     private fun applyMode(mode: Mode) {
@@ -57,6 +102,7 @@ internal object WebUiTheme {
 
     fun palette(context: Context): Palette {
         val dark = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val accent = savedAccent(context).color(dark)
         return if (dark) {
             Palette(
                 background = Color.rgb(16, 17, 19),
@@ -65,7 +111,7 @@ internal object WebUiTheme {
                 text = Color.rgb(244, 244, 245),
                 secondary = Color.rgb(154, 154, 160),
                 divider = Color.rgb(50, 51, 56),
-                accent = Color.rgb(0, 226, 239),
+                accent = accent,
                 green = Color.rgb(92, 184, 122),
                 blue = Color.rgb(96, 160, 224),
                 orange = Color.rgb(224, 154, 76),
@@ -81,7 +127,7 @@ internal object WebUiTheme {
                 text = Color.rgb(21, 21, 21),
                 secondary = Color.rgb(109, 109, 114),
                 divider = Color.rgb(224, 224, 228),
-                accent = Color.rgb(0, 159, 181),
+                accent = accent,
                 green = Color.rgb(52, 146, 84),
                 blue = Color.rgb(57, 116, 190),
                 orange = Color.rgb(190, 112, 35),

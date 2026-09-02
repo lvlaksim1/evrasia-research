@@ -90,6 +90,8 @@ class WebResearchV10Activity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(7), dp(6), dp(7), dp(6))
             setBackgroundColor(palette.background)
+            clipChildren = true
+            clipToPadding = true
         }
 
         val menu = iconButton(TechIconDrawable.Kind.MENU, false) { showBrowserMenu() }
@@ -144,26 +146,31 @@ class WebResearchV10Activity : AppCompatActivity() {
         }
         toolbar.addView(pageAction, LinearLayout.LayoutParams(dp(42), dp(46)).apply { marginStart = dp(5) })
 
-        val networkContainer = FrameLayout(this).apply { tag = "browser-network" }
+        val networkContainer = FrameLayout(this).apply {
+            tag = "browser-network"
+            clipChildren = true
+            clipToPadding = true
+        }
         val network = iconButton(TechIconDrawable.Kind.NETWORK, true) {
             ensureInstrumentation()
             startActivity(Intent(this, NetworkResearchActivity::class.java))
         }
-        networkContainer.addView(network, FrameLayout.LayoutParams(dp(42), dp(46)))
+        networkContainer.addView(network, FrameLayout.LayoutParams(dp(46), dp(46), Gravity.CENTER))
         networkBadge = TextView(this).apply {
             tag = "network-badge"
             visibility = View.GONE
-            setTextColor(Color.WHITE)
-            textSize = 9f
+            setTextColor(WebUiTheme.contrastText(palette.accent))
+            textSize = 8.5f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            minWidth = dp(18)
-            setPadding(dp(4), 0, dp(4), 0)
+            minWidth = dp(17)
+            maxLines = 1
+            setPadding(dp(3), 0, dp(3), 0)
             background = rounded(palette.accent, 9f)
         }
-        networkContainer.addView(networkBadge, FrameLayout.LayoutParams(-2, dp(18), Gravity.TOP or Gravity.END).apply {
-            topMargin = dp(1)
-            marginEnd = dp(0)
+        networkContainer.addView(networkBadge, FrameLayout.LayoutParams(-2, dp(17), Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(3)
+            marginEnd = dp(3)
         })
         toolbar.addView(networkContainer, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginStart = dp(4) })
         root.addView(toolbar, LinearLayout.LayoutParams(-1, dp(58)))
@@ -339,6 +346,10 @@ class WebResearchV10Activity : AppCompatActivity() {
                 dialog.dismiss()
                 showThemePicker()
             }
+            addMenuRow("●", "Цвет элементов", WebUiTheme.savedAccent(this@WebResearchV10Activity).label) {
+                dialog.dismiss()
+                showAccentPicker()
+            }
 
             addSection("ПРИЛОЖЕНИЕ")
             addMenuRow("i", "О приложении", "web research") {
@@ -373,7 +384,7 @@ class WebResearchV10Activity : AppCompatActivity() {
             minimumWidth = 0
             fun render() {
                 val selected = webViewController.isDesktopMode() == desktop
-                setTextColor(if (selected) Color.WHITE else palette.text)
+                setTextColor(if (selected) WebUiTheme.contrastText(palette.accent) else palette.text)
                 background = rounded(if (selected) palette.accent else palette.address, 12f, if (selected) palette.accent else palette.divider)
             }
             render()
@@ -382,7 +393,7 @@ class WebResearchV10Activity : AppCompatActivity() {
                 for (index in 0 until selector.childCount) {
                     (selector.getChildAt(index) as? Button)?.let { button ->
                         val selected = (button.text.toString() == "ПК") == webViewController.isDesktopMode()
-                        button.setTextColor(if (selected) Color.WHITE else palette.text)
+                        button.setTextColor(if (selected) WebUiTheme.contrastText(palette.accent) else palette.text)
                         button.background = rounded(if (selected) palette.accent else palette.address, 12f, if (selected) palette.accent else palette.divider)
                     }
                 }
@@ -548,6 +559,65 @@ class WebResearchV10Activity : AppCompatActivity() {
             .show()
     }
 
+    private fun showAccentPicker() {
+        val selectedAccent = WebUiTheme.savedAccent(this)
+        showBottomSheet("Цвет элементов") { dialog ->
+            addView(TextView(this@WebResearchV10Activity).apply {
+                text = "Выберите акцентный цвет кнопок, иконок, индикаторов и выделенных элементов интерфейса."
+                setTextColor(palette.secondary)
+                textSize = 12.5f
+                setPadding(dp(14), dp(2), dp(14), dp(14))
+            })
+
+            WebUiTheme.Accent.entries.chunked(4).forEach { accents ->
+                val row = LinearLayout(this@WebResearchV10Activity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.TOP
+                    setPadding(dp(8), dp(4), dp(8), dp(8))
+                }
+                accents.forEach { accent ->
+                    val color = WebUiTheme.accentColor(this@WebResearchV10Activity, accent)
+                    val cell = LinearLayout(this@WebResearchV10Activity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER_HORIZONTAL
+                    }
+                    cell.addView(Button(this@WebResearchV10Activity).apply {
+                        text = if (accent == selectedAccent) "✓" else ""
+                        contentDescription = accent.label
+                        isAllCaps = false
+                        textSize = 17f
+                        typeface = Typeface.DEFAULT_BOLD
+                        setTextColor(WebUiTheme.contrastText(color))
+                        minWidth = 0
+                        minimumWidth = 0
+                        minHeight = 0
+                        minimumHeight = 0
+                        setPadding(0, 0, 0, 0)
+                        background = rounded(color, 24f, if (accent == selectedAccent) palette.text else Color.TRANSPARENT)
+                        setOnClickListener {
+                            WebUiTheme.saveAccent(this@WebResearchV10Activity, accent)
+                            dialog.dismiss()
+                            window.decorView.post { recreate() }
+                        }
+                    }, LinearLayout.LayoutParams(dp(48), dp(48)))
+                    cell.addView(TextView(this@WebResearchV10Activity).apply {
+                        text = accent.label
+                        setTextColor(if (accent == selectedAccent) palette.text else palette.secondary)
+                        textSize = 9.5f
+                        gravity = Gravity.CENTER
+                        maxLines = 2
+                        setPadding(dp(2), dp(5), dp(2), 0)
+                    }, LinearLayout.LayoutParams(-1, dp(34)))
+                    row.addView(cell, LinearLayout.LayoutParams(0, dp(86), 1f))
+                }
+                repeat(4 - accents.size) {
+                    row.addView(View(this@WebResearchV10Activity), LinearLayout.LayoutParams(0, dp(86), 1f))
+                }
+                addView(row, LinearLayout.LayoutParams(-1, dp(90)))
+            }
+        }
+    }
+
     private fun showAbout() {
         val version = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "dev" } catch (_: Exception) { "dev" }
         AlertDialog.Builder(this)
@@ -655,7 +725,7 @@ class WebResearchV10Activity : AppCompatActivity() {
             isAllCaps = false
             textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
+            setTextColor(WebUiTheme.contrastText(palette.accent))
             background = rounded(palette.accent, 15f)
             setOnClickListener { click() }
         }, LinearLayout.LayoutParams(-1, dp(48)).apply { setMargins(dp(12), dp(12), dp(12), dp(2)) })
@@ -729,7 +799,7 @@ class WebResearchV10Activity : AppCompatActivity() {
 
     private fun updateBadge() {
         val count = archive.records.length()
-        networkBadge.text = if (count > 999) "999+" else count.toString()
+        networkBadge.text = if (count > 99) "99+" else count.toString()
         networkBadge.visibility = if (count > 0) View.VISIBLE else View.GONE
     }
 
