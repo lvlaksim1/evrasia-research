@@ -805,7 +805,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private fun buildRequestSummary(event:JSONObject)=buildString{
         append("Method: ").append(methodOf(event)).append('\n')
         append("URL: ").append(event.optString("url","—")).append('\n')
-        appendUrlBasics(this,event.optString("url","")
+        appendUrlBasics(this,event.optString("url",""))
         append("Source: ").append(displaySource(event).ifBlank{"—"}).append('\n')
         if(event.has("time"))append("Time: ").append(formatTime(event.optLong("time"))).append("  (").append(event.optLong("time")).append(")\n")
         appendField(this,event,"initiatorType","Initiator type")
@@ -839,7 +839,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private fun responseHeaderPairs(event:JSONObject):List<Pair<String,String>>{
         val headers=event.optJSONObject("responseHeaders")
         if(headers!=null)return objectHeaderPairs(headers)
-        return rawHeaderPairs(event.optString("responseHeadersRaw","")
+        return rawHeaderPairs(event.optString("responseHeadersRaw",""))
     }
 
     private fun objectHeaderPairs(headers:JSONObject?):List<Pair<String,String>>{
@@ -948,7 +948,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private fun shellQuote(value:String)="'"+value.replace("'","'\"'\"'")+"'"
 
     private fun buildCurl(event:JSONObject):String=buildString{
-        val method=methodOf(event).ifBlank{"GET"};append("curl -X ").append(shellQuote(method)).append(" ").append(shellQuote(event.optString("url","")
+        val method=methodOf(event).ifBlank{"GET"};append("curl -X ").append(shellQuote(method)).append(" ").append(shellQuote(event.optString("url","")))
         requestHeaderPairs(event).forEach{(name,value)->append(" \\\n  -H ").append(shellQuote("$name: $value"))}
         val body=event.optString("requestBody","");if(body.isNotBlank())append(" \\\n  --data-raw ").append(shellQuote(body))
     }
