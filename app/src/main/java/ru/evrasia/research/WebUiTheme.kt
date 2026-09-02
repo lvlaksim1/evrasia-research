@@ -4,11 +4,13 @@ import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Color
 import androidx.appcompat.app.AppCompatDelegate
+import java.util.Locale
 
 internal object WebUiTheme {
     const val PREFS = "web-research-ui"
     private const val KEY_THEME = "theme"
     private const val KEY_ACCENT = "accent"
+    private const val KEY_ACCENT_COLOR = "accent-color"
 
     enum class Mode(val key: String, val label: String) {
         SYSTEM("system", "Системная"),
@@ -64,6 +66,16 @@ internal object WebUiTheme {
         return Accent.entries.firstOrNull { it.key == key } ?: Accent.CYAN
     }
 
+    fun savedAccentColor(context: Context): Int {
+        val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (preferences.contains(KEY_ACCENT_COLOR)) return preferences.getInt(KEY_ACCENT_COLOR, defaultAccent(context))
+        return accentColor(context, savedAccent(context))
+    }
+
+    fun accentLabel(context: Context): String = colorLabel(savedAccentColor(context))
+
+    fun colorLabel(color: Int): String = String.format(Locale.US, "#%06X", color and 0xFFFFFF)
+
     fun applySaved(context: Context) {
         applyMode(savedMode(context))
     }
@@ -74,11 +86,21 @@ internal object WebUiTheme {
     }
 
     fun saveAccent(context: Context, accent: Accent) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_ACCENT, accent.key).apply()
+        val color = accentColor(context, accent)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_ACCENT, accent.key)
+            .putInt(KEY_ACCENT_COLOR, color)
+            .apply()
+    }
+
+    fun saveAccentColor(context: Context, color: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_ACCENT_COLOR, color or 0xFF000000.toInt())
+            .apply()
     }
 
     fun accentColor(context: Context, accent: Accent = savedAccent(context)): Int {
-        val dark = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val dark = isDark(context)
         return accent.color(dark)
     }
 
@@ -100,9 +122,14 @@ internal object WebUiTheme {
         )
     }
 
+    private fun isDark(context: Context): Boolean =
+        (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+
+    private fun defaultAccent(context: Context): Int = if (isDark(context)) Color.rgb(0, 226, 239) else Color.rgb(0, 159, 181)
+
     fun palette(context: Context): Palette {
-        val dark = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-        val accent = savedAccent(context).color(dark)
+        val dark = isDark(context)
+        val accent = savedAccentColor(context)
         return if (dark) {
             Palette(
                 background = Color.rgb(16, 17, 19),

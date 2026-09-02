@@ -55,6 +55,8 @@ class WebResearchV10Activity : AppCompatActivity() {
     private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var address: EditText
     private lateinit var pageAction: Button
+    private lateinit var menuButton: Button
+    private lateinit var networkButton: Button
     private lateinit var networkBadge: TextView
     private lateinit var progress: ProgressBar
     private lateinit var navigationController: WebNavigationController
@@ -94,8 +96,8 @@ class WebResearchV10Activity : AppCompatActivity() {
             clipToPadding = true
         }
 
-        val menu = iconButton(TechIconDrawable.Kind.MENU, false) { showBrowserMenu() }
-        toolbar.addView(menu, LinearLayout.LayoutParams(dp(42), dp(46)))
+        menuButton = iconButton(TechIconDrawable.Kind.MENU, false) { showBrowserMenu() }
+        toolbar.addView(menuButton, LinearLayout.LayoutParams(dp(42), dp(46)))
 
         address = EditText(this).apply {
             tag = "browser-address"
@@ -151,11 +153,11 @@ class WebResearchV10Activity : AppCompatActivity() {
             clipChildren = true
             clipToPadding = true
         }
-        val network = iconButton(TechIconDrawable.Kind.NETWORK, true) {
+        networkButton = iconButton(TechIconDrawable.Kind.NETWORK, true) {
             ensureInstrumentation()
             startActivity(Intent(this, NetworkResearchActivity::class.java))
         }
-        networkContainer.addView(network, FrameLayout.LayoutParams(dp(46), dp(46), Gravity.CENTER))
+        networkContainer.addView(networkButton, FrameLayout.LayoutParams(dp(46), dp(46), Gravity.CENTER))
         networkBadge = TextView(this).apply {
             tag = "network-badge"
             visibility = View.GONE
@@ -346,7 +348,7 @@ class WebResearchV10Activity : AppCompatActivity() {
                 dialog.dismiss()
                 showThemePicker()
             }
-            addMenuRow("●", "Цвет элементов", WebUiTheme.savedAccent(this@WebResearchV10Activity).label) {
+            addMenuRow("●", "Цвет элементов", WebUiTheme.accentLabel(this@WebResearchV10Activity)) {
                 dialog.dismiss()
                 showAccentPicker()
             }
@@ -560,62 +562,63 @@ class WebResearchV10Activity : AppCompatActivity() {
     }
 
     private fun showAccentPicker() {
-        val selectedAccent = WebUiTheme.savedAccent(this)
-        showBottomSheet("Цвет элементов") { dialog ->
+        showBottomSheet("Цвет элементов") { _ ->
             addView(TextView(this@WebResearchV10Activity).apply {
-                text = "Выберите акцентный цвет кнопок, иконок, индикаторов и выделенных элементов интерфейса."
+                text = "Водите пальцем по большой палитре для насыщенности и яркости, а по нижней цветной полосе — для оттенка. Изменение применяется сразу."
                 setTextColor(palette.secondary)
                 textSize = 12.5f
-                setPadding(dp(14), dp(2), dp(14), dp(14))
+                setPadding(dp(14), dp(2), dp(14), dp(10))
             })
 
-            WebUiTheme.Accent.entries.chunked(4).forEach { accents ->
-                val row = LinearLayout(this@WebResearchV10Activity).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.TOP
-                    setPadding(dp(8), dp(4), dp(8), dp(8))
-                }
-                accents.forEach { accent ->
-                    val color = WebUiTheme.accentColor(this@WebResearchV10Activity, accent)
-                    val cell = LinearLayout(this@WebResearchV10Activity).apply {
-                        orientation = LinearLayout.VERTICAL
-                        gravity = Gravity.CENTER_HORIZONTAL
-                    }
-                    cell.addView(Button(this@WebResearchV10Activity).apply {
-                        text = if (accent == selectedAccent) "✓" else ""
-                        contentDescription = accent.label
-                        isAllCaps = false
-                        textSize = 17f
-                        typeface = Typeface.DEFAULT_BOLD
-                        setTextColor(WebUiTheme.contrastText(color))
-                        minWidth = 0
-                        minimumWidth = 0
-                        minHeight = 0
-                        minimumHeight = 0
-                        setPadding(0, 0, 0, 0)
-                        background = rounded(color, 24f, if (accent == selectedAccent) palette.text else Color.TRANSPARENT)
-                        setOnClickListener {
-                            WebUiTheme.saveAccent(this@WebResearchV10Activity, accent)
-                            dialog.dismiss()
-                            window.decorView.post { recreate() }
-                        }
-                    }, LinearLayout.LayoutParams(dp(48), dp(48)))
-                    cell.addView(TextView(this@WebResearchV10Activity).apply {
-                        text = accent.label
-                        setTextColor(if (accent == selectedAccent) palette.text else palette.secondary)
-                        textSize = 9.5f
-                        gravity = Gravity.CENTER
-                        maxLines = 2
-                        setPadding(dp(2), dp(5), dp(2), 0)
-                    }, LinearLayout.LayoutParams(-1, dp(34)))
-                    row.addView(cell, LinearLayout.LayoutParams(0, dp(86), 1f))
-                }
-                repeat(4 - accents.size) {
-                    row.addView(View(this@WebResearchV10Activity), LinearLayout.LayoutParams(0, dp(86), 1f))
-                }
-                addView(row, LinearLayout.LayoutParams(-1, dp(90)))
+            val previewRow = LinearLayout(this@WebResearchV10Activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(2), dp(14), dp(8))
             }
+            val preview = View(this@WebResearchV10Activity).apply {
+                background = rounded(palette.accent, 12f, palette.divider)
+            }
+            val value = TextView(this@WebResearchV10Activity).apply {
+                text = WebUiTheme.colorLabel(palette.accent)
+                setTextColor(palette.text)
+                textSize = 13f
+                typeface = Typeface.MONOSPACE
+                setPadding(dp(10), 0, 0, 0)
+            }
+            previewRow.addView(preview, LinearLayout.LayoutParams(dp(34), dp(34)))
+            previewRow.addView(value, LinearLayout.LayoutParams(0, dp(34), 1f))
+            addView(previewRow)
+
+            val picker = AccentColorPickerView(this@WebResearchV10Activity).apply {
+                setColor(palette.accent)
+                onColorChanged = { color ->
+                    applyAccentColor(color, persist = false)
+                    preview.background = rounded(color, 12f, palette.divider)
+                    value.text = WebUiTheme.colorLabel(color)
+                }
+                onColorCommitted = { color ->
+                    applyAccentColor(color, persist = true)
+                }
+            }
+            addView(picker, LinearLayout.LayoutParams(-1, dp(284)).apply {
+                setMargins(dp(4), 0, dp(4), dp(6))
+            })
         }
+    }
+
+    private fun applyAccentColor(color: Int, persist: Boolean) {
+        val opaque = color or 0xFF000000.toInt()
+        if (persist) WebUiTheme.saveAccentColor(this, opaque)
+        palette = palette.copy(accent = opaque)
+        if (::pageAction.isInitialized) pageAction.setTextColor(opaque)
+        if (::menuButton.isInitialized) menuButton.foreground = TechIconDrawable(TechIconDrawable.Kind.MENU, opaque)
+        if (::networkButton.isInitialized) networkButton.foreground = TechIconDrawable(TechIconDrawable.Kind.NETWORK, opaque)
+        if (::networkBadge.isInitialized) {
+            networkBadge.setTextColor(WebUiTheme.contrastText(opaque))
+            networkBadge.background = rounded(opaque, 9f)
+        }
+        if (::progress.isInitialized) progress.progressTintList = ColorStateList.valueOf(opaque)
+        if (::swipeRefresh.isInitialized) swipeRefresh.setColorSchemeColors(opaque)
     }
 
     private fun showAbout() {
@@ -629,12 +632,13 @@ class WebResearchV10Activity : AppCompatActivity() {
 
     private fun showBottomSheet(title: String, build: LinearLayout.(Dialog) -> Unit) {
         val dialog = Dialog(this)
+        dialog.setCanceledOnTouchOutside(false)
+        dialog.setCancelable(true)
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(6), dp(8), dp(6), dp(16))
+            setPadding(dp(6), dp(12), dp(6), dp(16))
             background = rounded(palette.card, 22f, palette.divider)
         }
-        panel.addView(View(this).apply { background = rounded(palette.divider, 2f) }, LinearLayout.LayoutParams(dp(38), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(9) })
         panel.addView(TextView(this).apply {
             text = title
             setTextColor(palette.text)
@@ -811,6 +815,14 @@ class WebResearchV10Activity : AppCompatActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (::exportController.isInitialized) exportController.handleResult(requestCode, resultCode, data)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::palette.isInitialized) {
+            val savedAccent = WebUiTheme.savedAccentColor(this)
+            if (savedAccent != palette.accent) applyAccentColor(savedAccent, persist = false)
+        }
     }
 
     override fun onDestroy() {

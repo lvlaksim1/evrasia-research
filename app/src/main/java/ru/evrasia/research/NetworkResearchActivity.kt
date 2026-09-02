@@ -86,25 +86,49 @@ class NetworkResearchActivity : AppCompatActivity() {
             setBackgroundColor(palette.background)
         }
 
-        val header = LinearLayout(this).apply {
-            tag = "network-header"
+        val titleBar = LinearLayout(this).apply {
+            tag = "network-title"
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(7), dp(6), dp(7), dp(6))
+            setPadding(dp(14), dp(5), dp(14), dp(3))
             setBackgroundColor(palette.background)
         }
-        header.addView(iconButton(TechIconDrawable.Kind.BACK) { finish() }, LinearLayout.LayoutParams(dp(42), dp(44)))
-        header.addView(TextView(this).apply {
+        titleBar.addView(TextView(this).apply {
             text = "Сетевые запросы"
             setTextColor(palette.text)
             textSize = 18f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), 0, 0, 0)
-        }, LinearLayout.LayoutParams(0, dp(44), 1f))
-        header.addView(textButton("⌕") { toggleSearch() }, LinearLayout.LayoutParams(dp(42), dp(44)))
-        header.addView(textButton("⋮") { showNetworkMenu() }, LinearLayout.LayoutParams(dp(42), dp(44)).apply { marginStart = dp(3) })
-        root.addView(header, LinearLayout.LayoutParams(-1, dp(56)))
+        }, LinearLayout.LayoutParams(-1, dp(42)))
+        root.addView(titleBar, LinearLayout.LayoutParams(-1, dp(50)))
+
+        list = ListView(this).apply {
+            tag = "network-list"
+            divider = ColorDrawable(Color.TRANSPARENT)
+            dividerHeight = dp(4)
+            setBackgroundColor(palette.background)
+            setPadding(dp(7), 0, dp(7), dp(8))
+            clipToPadding = false
+        }
+        adapter = RequestAdapter()
+        list.adapter = adapter
+        list.setOnItemClickListener { _, _, position, _ -> showDetails(items[position]) }
+        root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        val controls = LinearLayout(this).apply {
+            tag = "network-controls-bottom"
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), 0, dp(5))
+            setBackgroundColor(palette.card)
+        }
+
+        counter = TextView(this).apply {
+            tag = "network-counter"
+            setTextColor(palette.secondary)
+            textSize = 11f
+            setPadding(dp(12), dp(3), dp(12), dp(4))
+        }
+        controls.addView(counter, LinearLayout.LayoutParams(-1, dp(26)))
 
         search = EditText(this).apply {
             tag = "network-search"
@@ -123,17 +147,17 @@ class NetworkResearchActivity : AppCompatActivity() {
                 override fun afterTextChanged(s: Editable?) = Unit
             })
         }
-        root.addView(search, LinearLayout.LayoutParams(-1, dp(42)).apply { setMargins(dp(10), 0, dp(10), dp(6)) })
+        controls.addView(search, LinearLayout.LayoutParams(-1, dp(42)).apply { setMargins(dp(10), 0, dp(10), dp(5)) })
 
         val filterScroll = HorizontalScrollView(this).apply {
             tag = "network-filter-scroll"
             isHorizontalScrollBarEnabled = false
-            setBackgroundColor(palette.background)
+            setBackgroundColor(palette.card)
         }
         val filterRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), dp(2), dp(8), dp(6))
+            setPadding(dp(8), dp(2), dp(8), dp(4))
         }
         filters.forEach { (key, label) ->
             val button = Button(this).apply {
@@ -156,28 +180,27 @@ class NetworkResearchActivity : AppCompatActivity() {
         }
         renderFilterButtons()
         filterScroll.addView(filterRow)
-        root.addView(filterScroll, LinearLayout.LayoutParams(-1, dp(44)))
+        controls.addView(filterScroll, LinearLayout.LayoutParams(-1, dp(42)))
 
-        counter = TextView(this).apply {
-            tag = "network-counter"
+        val actionBar = LinearLayout(this).apply {
+            tag = "network-action-bar"
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(7), dp(3), dp(7), dp(2))
+        }
+        actionBar.addView(iconButton(TechIconDrawable.Kind.BACK) { finish() }, LinearLayout.LayoutParams(dp(46), dp(44)))
+        actionBar.addView(TextView(this).apply {
+            text = "Network / Research"
             setTextColor(palette.secondary)
-            textSize = 11f
-            setPadding(dp(12), dp(2), dp(12), dp(5))
-        }
-        root.addView(counter, LinearLayout.LayoutParams(-1, dp(28)))
+            textSize = 11.5f
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), 0, 0, 0)
+        }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        actionBar.addView(textButton("⌕") { toggleSearch() }, LinearLayout.LayoutParams(dp(46), dp(44)))
+        actionBar.addView(textButton("⋮") { showNetworkMenu() }, LinearLayout.LayoutParams(dp(46), dp(44)).apply { marginStart = dp(3) })
+        controls.addView(actionBar, LinearLayout.LayoutParams(-1, dp(50)))
 
-        list = ListView(this).apply {
-            tag = "network-list"
-            divider = ColorDrawable(Color.TRANSPARENT)
-            dividerHeight = dp(4)
-            setBackgroundColor(palette.background)
-            setPadding(dp(7), 0, dp(7), dp(8))
-            clipToPadding = false
-        }
-        adapter = RequestAdapter()
-        list.adapter = adapter
-        list.setOnItemClickListener { _, _, position, _ -> showDetails(items[position]) }
-        root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(controls, LinearLayout.LayoutParams(-1, -2))
 
         setContentView(root)
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
@@ -246,7 +269,7 @@ class NetworkResearchActivity : AppCompatActivity() {
     private fun renderFilterButtons() {
         filterButtons.forEach { (key, button) ->
             val selected = key == selectedCategory
-            button.setTextColor(if (selected) Color.WHITE else palette.text)
+            button.setTextColor(if (selected) WebUiTheme.contrastText(palette.accent) else palette.text)
             button.background = rounded(if (selected) palette.accent else palette.address, 16f, if (selected) palette.accent else palette.divider)
         }
     }
@@ -267,7 +290,7 @@ class NetworkResearchActivity : AppCompatActivity() {
             "Экспорт ZIP",
             "Расширенный журнал"
         )
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Network / Research")
             .setItems(options) { _, which ->
                 when (which) {
@@ -280,17 +303,20 @@ class NetworkResearchActivity : AppCompatActivity() {
                     3 -> startActivity(Intent(this, NetworkDebuggerActivity::class.java))
                 }
             }
-            .show()
+            .create()
+        dialog.setCanceledOnTouchOutside(false)
+        dialog.show()
     }
 
     private fun showDetails(event: JSONObject) {
         val dialog = Dialog(this)
+        dialog.setCanceledOnTouchOutside(false)
+        dialog.setCancelable(true)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = rounded(palette.card, 22f, palette.divider)
-            setPadding(dp(10), dp(10), dp(10), dp(12))
+            setPadding(dp(10), dp(13), dp(10), dp(12))
         }
-        root.addView(View(this).apply { background = rounded(palette.divider, 2f) }, LinearLayout.LayoutParams(dp(38), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(10) })
 
         val method = NetworkEventClassifier.methodOf(event)
         val url = NetworkEventClassifier.eventLocation(event)
@@ -524,7 +550,7 @@ class NetworkResearchActivity : AppCompatActivity() {
         isAllCaps = false
         textSize = 12f
         typeface = Typeface.DEFAULT_BOLD
-        setTextColor(Color.WHITE)
+        setTextColor(WebUiTheme.contrastText(palette.accent))
         background = rounded(palette.accent, 14f)
         setOnClickListener { click() }
     }
