@@ -85,6 +85,10 @@ internal class WebResearchWebViewController(
                 super.onPageStarted(view, url, favicon)
                 handler.postDelayed({ captureController.ensureInstrumentation() }, 100)
                 handler.postDelayed({ captureController.ensureInstrumentation() }, 350)
+                if (desktopMode) {
+                    handler.postDelayed({ applyDesktopViewport() }, 150)
+                    handler.postDelayed({ applyDesktopViewport() }, 500)
+                }
             }
 
             override fun onPageFinished(view: WebView, url: String) {
@@ -92,6 +96,11 @@ internal class WebResearchWebViewController(
                 swipeRefresh.isRefreshing = false
                 address.setText(url)
                 record(JSONObject().put("source", "navigation").put("time", System.currentTimeMillis()).put("url", url).put("page", url).put("method", "GET"))
+                if (desktopMode) {
+                    applyDesktopViewport()
+                    handler.postDelayed({ applyDesktopViewport() }, 250)
+                    handler.postDelayed({ applyDesktopViewport() }, 900)
+                }
                 captureController.ensureInstrumentation()
                 captureController.captureLightPageSnapshot()
                 updateStats()
@@ -183,6 +192,7 @@ internal class WebResearchWebViewController(
         web.settings.userAgentString = userAgent
         web.settings.useWideViewPort = desktop
         web.settings.loadWithOverviewMode = desktop
+        web.setInitialScale(0)
         captureController.updateUserAgent(userAgent)
         activity.getSharedPreferences("web-research-browser", Context.MODE_PRIVATE).edit().putBoolean("desktop-mode", desktop).apply()
         modeMenuButton?.text = browserModeLabel()
@@ -190,8 +200,49 @@ internal class WebResearchWebViewController(
             .put("source", "browser-mode")
             .put("time", System.currentTimeMillis())
             .put("mode", if (desktop) "desktop" else "mobile")
-            .put("userAgent", userAgent))
+            .put("userAgent", userAgent)
+            .put("desktopViewportWidth", if (desktop) 1280 else JSONObject.NULL))
         if (reload && !web.url.isNullOrBlank()) web.reload()
+    }
+
+    private fun applyDesktopViewport() {
+        if (!desktopMode) return
+        val script = """
+            (function() {
+                try {
+                    var meta = document.querySelector('meta[name="viewport"]');
+                    if (!meta) {
+                        meta = document.createElement('meta');
+                        meta.setAttribute('name', 'viewport');
+                        (document.head || document.documentElement).appendChild(meta);
+                    }
+                    var desktopContent = 'width=1280, initial-scale=1.0, minimum-scale=0.1, maximum-scale=5.0, user-scalable=yes';
+                    if (meta.getAttribute('content') !== desktopContent) meta.setAttribute('content', desktopContent);
+                    document.documentElement.style.minWidth = '1280px';
+                    if (document.body) document.body.style.minWidth = '1280px';
+                    if (!window.__WR_DESKTOP_VIEWPORT_OBSERVER) {
+                        window.__WR_DESKTOP_VIEWPORT_OBSERVER = new MutationObserver(function() {
+                            var current = document.querySelector('meta[name="viewport"]');
+                            if (current && current.getAttribute('content') !== desktopContent) current.setAttribute('content', desktopContent);
+                            document.documentElement.style.minWidth = '1280px';
+                            if (document.body) document.body.style.minWidth = '1280px';
+                        });
+                        window.__WR_DESKTOP_VIEWPORT_OBSERVER.observe(document.documentElement, {subtree:true, childList:true, attributes:true, attributeFilter:['content']});
+                    }
+                    window.dispatchEvent(new Event('resize'));
+                    return JSON.stringify({width: window.innerWidth, screenWidth: screen.width, viewport: meta.getAttribute('content')});
+                } catch (e) {
+                    return JSON.stringify({error:String(e)});
+                }
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(script) { result ->
+            record(JSONObject()
+                .put("source", "desktop-viewport")
+                .put("time", System.currentTimeMillis())
+                .put("url", web.url ?: "")
+                .put("result", result ?: ""))
+        }
     }
 
     private fun buildDesktopUserAgent(mobile: String): String {
