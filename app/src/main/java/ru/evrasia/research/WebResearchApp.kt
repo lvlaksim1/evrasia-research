@@ -1,55 +1,64 @@
 package ru.evrasia.research
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.app.Application
-import android.content.Intent
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
-import android.view.View
-import android.view.ViewGroup
 import android.webkit.CookieManager
-import android.widget.*
 import java.lang.ref.WeakReference
 
 class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
-    private val handler=Handler(Looper.getMainLooper())
-    private var browserRef=WeakReference<WebResearchV10Activity>(null)
-    private var debuggerRef=WeakReference<NetworkDebuggerActivity>(null)
-    private var advancedTick=0
-    private val ink=Color.rgb(3,10,15); private val surface=Color.rgb(7,18,25); private val surface2=Color.rgb(10,25,34); private val line=Color.rgb(21,57,69); private val cyan=Color.rgb(0,226,239); private val white=Color.rgb(232,244,248); private val muted=Color.rgb(113,139,151)
-    private val ticker=object:Runnable{override fun run(){advancedTick++;browserRef.get()?.let{if(advancedTick%5==0){it.ensureInstrumentation();installAdvancedCapture(it)}};handler.postDelayed(this,1000)}}
-    override fun onCreate(){super.onCreate();registerActivityLifecycleCallbacks(this);handler.post(ticker)}
+    private val handler = Handler(Looper.getMainLooper())
+    private var browserRef = WeakReference<WebResearchV10Activity>(null)
+    private var advancedTick = 0
+
+    private val ticker = object : Runnable {
+        override fun run() {
+            advancedTick++
+            browserRef.get()?.let { browser ->
+                if (advancedTick % 5 == 0) {
+                    browser.ensureInstrumentation()
+                    installAdvancedCapture(browser)
+                }
+            }
+            handler.postDelayed(this, 1000)
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        WebUiTheme.applySaved(this)
+        registerActivityLifecycleCallbacks(this)
+        handler.post(ticker)
+    }
 
     internal fun activeBrowserActivity(): WebResearchV10Activity? = browserRef.get()
 
-    fun currentCookiesText():String{
-        val browser=browserRef.get()?:return "Браузер не открыт"
-        return try{
-            val w=browser.researchWebView()
-            val page=w?.url.orEmpty()
-            val raw=if(page.isBlank())"" else CookieManager.getInstance().getCookie(page).orEmpty()
-            val cookies=raw.split(';').map{it.trim()}.filter{it.isNotBlank()}
-            buildString{
-                append("Страница: ").append(page.ifBlank{"—"})
-                append("\nКуки текущей сессии: ").append(cookies.size)
-                if(cookies.isNotEmpty()){
+    fun currentCookiesText(): String {
+        val browser = browserRef.get() ?: return "Браузер не открыт"
+        return try {
+            val web = browser.researchWebView()
+            val page = web?.url.orEmpty()
+            val raw = if (page.isBlank()) "" else CookieManager.getInstance().getCookie(page).orEmpty()
+            val cookies = raw.split(';').map { it.trim() }.filter { it.isNotBlank() }
+            buildString {
+                append("Страница: ").append(page.ifBlank { "—" })
+                append("\nCookies текущей сессии: ").append(cookies.size)
+                if (cookies.isNotEmpty()) {
                     append("\n\n")
-                    cookies.forEachIndexed{i,c->append(i+1).append(". ").append(c).append('\n')}
+                    cookies.forEachIndexed { index, cookie -> append(index + 1).append(". ").append(cookie).append('\n') }
                 }
             }.trimEnd()
-        }catch(e:Exception){"Не удалось получить куки: ${e.message?:e.javaClass.simpleName}"}
+        } catch (e: Exception) {
+            "Не удалось получить cookies: ${e.message ?: e.javaClass.simpleName}"
+        }
     }
 
-    private fun installAdvancedCapture(a:WebResearchV10Activity){
-        try{
-            val w=a.researchWebView()?:return
-            val js="""
+    private fun installAdvancedCapture(activity: WebResearchV10Activity) {
+        try {
+            val web = activity.researchWebView() ?: return
+            val js = """
                 (function(){
                   if(window.__WR_PERF)return;window.__WR_PERF=true;
                   const send=o=>{try{EvrasiaResearch.record(JSON.stringify(o))}catch(e){}};
@@ -62,70 +71,32 @@ class WebResearchApp : Application(), Application.ActivityLifecycleCallbacks {
                   try{let n=performance.getEntriesByType('navigation')[0];if(n)send({source:'navigation-timing',time:Math.round(performance.timeOrigin+n.startTime),method:'GET',url:n.name,httpVersion:n.nextHopProtocol||'',duration:num(n.duration),transferSize:n.transferSize||0,encodedBodySize:n.encodedBodySize||0,decodedBodySize:n.decodedBodySize||0,cache:cache(n),redirectCount:n.redirectCount||0,timing:timing(n)})}catch(e){}
                 })();
             """.trimIndent()
-            w.evaluateJavascript(js,null)
-        }catch(_:Exception){}
+            web.evaluateJavascript(js, null)
+        } catch (_: Exception) {
+        }
     }
 
-    private fun iconButton(a:Activity,kind:TechIconDrawable.Kind,strong:Boolean=false)=Button(a).apply{text="";minWidth=0;minimumWidth=0;setPadding(dp(a,9),dp(a,9),dp(a,9),dp(a,9));background=round(a,if(strong)Color.rgb(5,43,51) else surface2,10,if(strong)cyan else line);foreground=TechIconDrawable(kind,cyan)}
-    private fun applyIcon(a:Activity,b:Button,kind:TechIconDrawable.Kind,strong:Boolean=false){b.text="";b.minWidth=0;b.minimumWidth=0;b.setPadding(dp(a,9),dp(a,9),dp(a,9),dp(a,9));b.background=round(a,if(strong)Color.rgb(5,43,51) else surface2,10,if(strong)cyan else line);b.foreground=TechIconDrawable(kind,cyan)}
-
-    private fun brandBrowser(a:WebResearchV10Activity){val content=a.findViewById<ViewGroup>(android.R.id.content)?:return;val root=content.getChildAt(0) as? LinearLayout?:return;if(root.tag=="compact-cyan-v24")return;root.tag="compact-cyan-v24";if(root.childCount<7)return;root.setBackgroundColor(ink);val navCard=root.getChildAt(1) as? LinearLayout?:return;val bookmarks=root.getChildAt(2) as? LinearLayout?:return;root.getChildAt(0).visibility=View.GONE;root.getChildAt(3).visibility=View.GONE;root.getChildAt(4).visibility=View.GONE;root.getChildAt(6).visibility=View.GONE;bookmarks.visibility=View.GONE
-        navCard.background=round(a,surface,12,line);navCard.setPadding(dp(a,4),dp(a,4),dp(a,4),dp(a,4));(navCard.layoutParams as? LinearLayout.LayoutParams)?.apply{setMargins(dp(a,5),dp(a,4),dp(a,5),dp(a,4));navCard.layoutParams=this}
-        val nav=navCard.getChildAt(0) as? LinearLayout?:return;val address=nav.getChildAt(0) as? EditText?:return;val go=nav.getChildAt(1) as? Button?:return;address.textSize=12f;address.typeface=Typeface.create(Typeface.MONOSPACE,Typeface.NORMAL);address.setTextColor(white);address.setHintTextColor(muted);address.background=round(a,surface2,9,line);address.setPadding(dp(a,10),0,dp(a,10),0);address.layoutParams=LinearLayout.LayoutParams(0,dp(a,36),1f).apply{marginStart=dp(a,4);marginEnd=dp(a,4)};applyIcon(a,go,TechIconDrawable.Kind.NAVIGATE,true);go.layoutParams=LinearLayout.LayoutParams(dp(a,38),dp(a,36))
-        if(bookmarks.childCount>0)bookmarks.getChildAt(0).visibility=View.GONE;bookmarks.background=round(a,surface,10,line);bookmarks.setPadding(dp(a,5),dp(a,4),dp(a,5),dp(a,4));(bookmarks.layoutParams as? LinearLayout.LayoutParams)?.apply{setMargins(dp(a,5),0,dp(a,5),dp(a,4));bookmarks.layoutParams=this};val row=if(bookmarks.childCount>1)bookmarks.getChildAt(1) as? LinearLayout else null;row?.gravity=Gravity.CENTER_VERTICAL;row?.let{for(i in 0 until it.childCount){when(val v=it.getChildAt(i)){is Button->{v.textSize=9f;v.setTextColor(white);v.background=round(a,surface2,8,line);v.minWidth=0;v.minimumWidth=0};is Spinner->v.background=round(a,surface2,8,line)}};val bs=(0 until it.childCount).map{i->it.getChildAt(i)}.filterIsInstance<Button>();bs.firstOrNull()?.let{b->applyIcon(a,b,TechIconDrawable.Kind.NAVIGATE,true)}}
-        val menu=iconButton(a,TechIconDrawable.Kind.MENU).apply{setOnClickListener{bookmarks.visibility=if(bookmarks.visibility==View.VISIBLE)View.GONE else View.VISIBLE}};nav.addView(menu,0,LinearLayout.LayoutParams(dp(a,38),dp(a,36)));val net=iconButton(a,TechIconDrawable.Kind.NETWORK,true).apply{setOnClickListener{installAdvancedCapture(a);a.startActivity(Intent(a,NetworkDebuggerActivity::class.java))}};nav.addView(net,LinearLayout.LayoutParams(dp(a,38),dp(a,36)).apply{marginStart=dp(a,4)})}
-
-    private fun addCookiesButton(a:NetworkDebuggerActivity,root:LinearLayout){
-        val toolbarScroll=root.getChildAt(0) as? HorizontalScrollView?:return
-        val toolbar=toolbarScroll.getChildAt(0) as? LinearLayout?:return
-        if(toolbar.findViewWithTag<Button>("debugger-cookies")!=null)return
-        val button=Button(a).apply{
-            tag="debugger-cookies"
-            text="Куки"
-            setTextColor(white)
-            textSize=9f
-            typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD)
-            isAllCaps=false
-            minWidth=0;minimumWidth=0;minHeight=0;minimumHeight=0
-            setPadding(dp(a,9),0,dp(a,9),0)
-            background=round(a,surface2,8,line)
-            setOnClickListener{showCookies(a)}
+    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+        if (activity is WebResearchV10Activity) {
+            browserRef = WeakReference(activity)
+            NetworkDebugStore.clear()
         }
-        toolbar.addView(button,minOf(3,toolbar.childCount),LinearLayout.LayoutParams(-2,dp(a,36)).apply{marginStart=dp(a,4)})
     }
 
-    private fun showCookies(a:NetworkDebuggerActivity){
-        val body=TextView(a).apply{
-            text=currentCookiesText()
-            setTextColor(white)
-            textSize=11f
-            typeface=Typeface.MONOSPACE
-            setTextIsSelectable(true)
-            setPadding(dp(a,12),dp(a,10),dp(a,12),dp(a,14))
-            background=round(a,surface2,9,line)
+    override fun onActivityResumed(activity: Activity) {
+        if (activity is WebResearchV10Activity) {
+            browserRef = WeakReference(activity)
+            activity.ensureInstrumentation()
+            installAdvancedCapture(activity)
         }
-        val scroll=ScrollView(a).apply{
-            setBackgroundColor(ink)
-            setPadding(dp(a,8),dp(a,6),dp(a,8),dp(a,6))
-            addView(body,ViewGroup.LayoutParams(-1,-2))
-        }
-        val dialog=AlertDialog.Builder(a).setTitle("Куки").setView(scroll).setNegativeButton("Закрыть",null).create()
-        dialog.setOnShowListener{
-            dialog.window?.setBackgroundDrawable(round(a,ink,16,line))
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(cyan)
-        }
-        dialog.show()
     }
 
-    private fun brandDebugger(a:NetworkDebuggerActivity){val content=a.findViewById<ViewGroup>(android.R.id.content)?:return;val root=content.getChildAt(0) as? LinearLayout?:return;root.setBackgroundColor(ink);addCookiesButton(a,root);if(root.childCount>=5){val h=root.getChildAt(0) as? LinearLayout;h?.setPadding(dp(a,9),dp(a,5),dp(a,9),dp(a,4));h?.background=surfaceDrawable();(h?.getChildAt(0) as? TextView)?.apply{text="NETWORK TRACE";setTextColor(white);textSize=13f;typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD);letterSpacing=.08f};(h?.getChildAt(1) as? TextView)?.apply{text="LIVE · TIMING · PROTOCOL";setTextColor(cyan);textSize=8f;typeface=Typeface.MONOSPACE};val tools=root.getChildAt(1);tools.setBackgroundColor(surface);styleTree(a,tools);(root.getChildAt(2) as? LinearLayout)?.let{it.setPadding(dp(a,5),dp(a,3),dp(a,5),dp(a,3));styleTree(a,it)};(root.getChildAt(3) as? TextView)?.apply{setTextColor(muted);textSize=9f;typeface=Typeface.MONOSPACE;setPadding(dp(a,7),dp(a,3),dp(a,7),dp(a,3))};(root.getChildAt(4) as? ListView)?.apply{setBackgroundColor(ink);divider=null;setPadding(dp(a,4),dp(a,2),dp(a,4),dp(a,4));clipToPadding=false}};addBack(a);styleDebuggerRows(a)}
-    private fun styleTree(a:Activity,v:View){when(v){is Button->{v.textSize=9f;v.setTextColor(white);v.minWidth=0;v.minimumWidth=0;v.setPadding(dp(a,7),0,dp(a,7),0);v.background=round(a,surface2,8,line)};is EditText->{v.textSize=10f;v.setTextColor(white);v.setHintTextColor(muted);v.typeface=Typeface.MONOSPACE;v.background=round(a,surface2,8,line)};is Spinner->v.background=round(a,surface2,8,line);is ViewGroup->for(i in 0 until v.childCount)styleTree(a,v.getChildAt(i))}}
-    private fun styleDebuggerRows(a:NetworkDebuggerActivity){val root=(a.findViewById<ViewGroup>(android.R.id.content)?.getChildAt(0) as? LinearLayout)?:return;val l=if(root.childCount>=5)root.getChildAt(4) as? ListView else null;l?.let{for(i in 0 until it.childCount){val r=it.getChildAt(i) as? LinearLayout?:continue;r.background=round(a,surface,8,line);r.setPadding(dp(a,8),dp(a,5),dp(a,8),dp(a,5));(r.getChildAt(0) as? TextView)?.apply{typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD);textSize=10f};(r.getChildAt(1) as? TextView)?.apply{typeface=Typeface.MONOSPACE;textSize=9f;setTextColor(muted)}}}}
-    private fun addBack(a:NetworkDebuggerActivity){val c=a.findViewById<ViewGroup>(android.R.id.content)?:return;if(c.findViewWithTag<Button>("debugger-back")!=null)return;val b=iconButton(a,TechIconDrawable.Kind.BACK).apply{tag="debugger-back";setOnClickListener{a.finish()}};c.addView(b,FrameLayout.LayoutParams(dp(a,34),dp(a,32)).apply{gravity=Gravity.TOP or Gravity.END;topMargin=dp(a,28);marginEnd=dp(a,7)})}
-    private fun surfaceDrawable()=GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,intArrayOf(surface,surface2))
-    private fun round(a:Activity,fill:Int,r:Int,stroke:Int?=null)=GradientDrawable().apply{shape=GradientDrawable.RECTANGLE;setColor(fill);cornerRadius=dp(a,r).toFloat();stroke?.let{setStroke(dp(a,1),it)}}
-    private fun dp(a:Activity,v:Int)=(v*a.resources.displayMetrics.density).toInt()
-    override fun onActivityCreated(a:Activity,s:Bundle?){when(a){is WebResearchV10Activity->{browserRef=WeakReference(a);NetworkDebugStore.clear();brandBrowser(a)};is NetworkDebuggerActivity->debuggerRef=WeakReference(a)}}
-    override fun onActivityResumed(a:Activity){when(a){is WebResearchV10Activity->{browserRef=WeakReference(a);brandBrowser(a);a.ensureInstrumentation();installAdvancedCapture(a)};is NetworkDebuggerActivity->{debuggerRef=WeakReference(a);browserRef.get()?.let{it.ensureInstrumentation();installAdvancedCapture(it)};brandDebugger(a)}}}
-    override fun onActivityDestroyed(a:Activity){if(a is WebResearchV10Activity&&browserRef.get()===a)browserRef.clear();if(a is NetworkDebuggerActivity&&debuggerRef.get()===a)debuggerRef.clear()}
-    override fun onActivityStarted(a:Activity){};override fun onActivityPaused(a:Activity){};override fun onActivityStopped(a:Activity){};override fun onActivitySaveInstanceState(a:Activity,o:Bundle){}
+    override fun onActivityDestroyed(activity: Activity) {
+        if (activity is WebResearchV10Activity && browserRef.get() === activity) browserRef.clear()
+    }
+
+    override fun onActivityStarted(activity: Activity) = Unit
+    override fun onActivityPaused(activity: Activity) = Unit
+    override fun onActivityStopped(activity: Activity) = Unit
+    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
 }
