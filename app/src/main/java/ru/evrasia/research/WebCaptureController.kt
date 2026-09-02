@@ -33,6 +33,10 @@ internal class WebCaptureController(
         artifactChunks.clear()
     }
 
+    fun updateUserAgent(userAgent: String) {
+        resourceCapture.updateUserAgent(userAgent)
+    }
+
     fun shutdown() {
         resourceCapture.shutdown()
     }
