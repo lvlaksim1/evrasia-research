@@ -23,6 +23,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".NetworkResearchActivity" android:exported="false" android:label="Сетевые запросы" />
         <activity android:name=".NetworkDebuggerActivity" android:exported="false" android:label="Network debugger" />
     </application>
 </manifest>
