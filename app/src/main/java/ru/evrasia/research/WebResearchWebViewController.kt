@@ -2,9 +2,13 @@ package ru.evrasia.research
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Handler
 import android.os.Message
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -12,7 +16,10 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.Spinner
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
@@ -32,9 +39,11 @@ internal class WebResearchWebViewController(
     private var mobileUserAgent = ""
     private var desktopUserAgent = ""
     private var desktopMode = false
+    private var modeMenuButton: Button? = null
 
     fun install() {
         initializeBrowserMode()
+        installHamburgerActions()
         WebDownloadController(activity, web, web.settings.userAgentString, record).install()
 
         web.webChromeClient = object : WebChromeClient() {
@@ -102,6 +111,58 @@ internal class WebResearchWebViewController(
         }
     }
 
+    private fun installHamburgerActions() {
+        val root = swipeRefresh.parent as? LinearLayout ?: return
+        val bookmarkPanel = (0 until root.childCount)
+            .map { root.getChildAt(it) }
+            .filterIsInstance<LinearLayout>()
+            .firstOrNull { containsSpinner(it) } ?: return
+        if (bookmarkPanel.findViewWithTag<View>("web-browser-menu-actions") != null) return
+
+        val row = LinearLayout(activity).apply {
+            tag = "web-browser-menu-actions"
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6), 0, 0)
+        }
+        modeMenuButton = menuActionButton(browserModeLabel()) {
+            toggleBrowserMode()
+        }
+        val cookieButton = menuActionButton("Удалить куки домена") {
+            clearCurrentDomainCookies()
+        }
+        row.addView(modeMenuButton, LinearLayout.LayoutParams(0, dp(38), 1f))
+        row.addView(cookieButton, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(6) })
+        bookmarkPanel.addView(row, LinearLayout.LayoutParams(-1, -2))
+    }
+
+    private fun containsSpinner(view: View): Boolean {
+        if (view is Spinner) return true
+        if (view !is ViewGroup) return false
+        for (index in 0 until view.childCount) {
+            if (containsSpinner(view.getChildAt(index))) return true
+        }
+        return false
+    }
+
+    private fun menuActionButton(label: String, click: () -> Unit) = Button(activity).apply {
+        text = label
+        setTextColor(Color.rgb(232, 244, 248))
+        textSize = 9.5f
+        isAllCaps = false
+        minWidth = 0
+        minimumWidth = 0
+        minHeight = 0
+        minimumHeight = 0
+        setPadding(dp(8), 0, dp(8), 0)
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(Color.rgb(10, 25, 34))
+            cornerRadius = dp(8).toFloat()
+            setStroke(dp(1), Color.rgb(21, 57, 69))
+        }
+        setOnClickListener { click() }
+    }
+
     internal fun browserModeLabel(): String = if (desktopMode) "Версия: ПК" else "Версия: мобильная"
 
     internal fun toggleBrowserMode() {
@@ -123,6 +184,7 @@ internal class WebResearchWebViewController(
         web.settings.loadWithOverviewMode = desktop
         captureController.updateUserAgent(userAgent)
         activity.getSharedPreferences("web-research-browser", Context.MODE_PRIVATE).edit().putBoolean("desktop-mode", desktop).apply()
+        modeMenuButton?.text = browserModeLabel()
         record(JSONObject()
             .put("source", "browser-mode")
             .put("time", System.currentTimeMillis())
@@ -209,4 +271,6 @@ internal class WebResearchWebViewController(
         for (index in 0 until labels.size - 1) out.add(labels.drop(index).joinToString("."))
         return out
     }
+
+    private fun dp(value: Int): Int = (value * activity.resources.displayMetrics.density).toInt()
 }
