@@ -8,6 +8,7 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
@@ -19,6 +20,7 @@ import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.webkit.CookieManager
 import android.webkit.MimeTypeMap
@@ -30,6 +32,7 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
@@ -39,6 +42,7 @@ import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URL
@@ -51,17 +55,17 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 class NetworkDebuggerActivity : AppCompatActivity() {
-    private val bg = Color.rgb(6,14,12)
-    private val panel = Color.rgb(14,29,24)
-    private val panel2 = Color.rgb(20,39,33)
-    private val line = Color.rgb(50,76,65)
-    private val accent = Color.rgb(151,231,92)
-    private val textColor = Color.rgb(238,245,241)
-    private val muted = Color.rgb(157,177,166)
-    private val bad = Color.rgb(255,118,118)
-    private val cyan = Color.rgb(0,226,239)
-    private val amber = Color.rgb(255,205,112)
-    private val violet = Color.rgb(196,162,255)
+    private val bg get() = WebUiTheme.palette(this).background
+    private val panel get() = WebUiTheme.palette(this).card
+    private val panel2 get() = WebUiTheme.palette(this).address
+    private val line get() = WebUiTheme.palette(this).divider
+    private val accent get() = WebUiTheme.palette(this).accent
+    private val textColor get() = WebUiTheme.palette(this).text
+    private val muted get() = WebUiTheme.palette(this).secondary
+    private val bad get() = WebUiTheme.palette(this).red
+    private val cyan get() = WebUiTheme.palette(this).accent
+    private val amber get() = WebUiTheme.palette(this).orange
+    private val violet get() = WebUiTheme.palette(this).blue
 
     private lateinit var list: ListView
     private lateinit var adapter: EventAdapter
@@ -74,6 +78,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private lateinit var typeSpinner: Spinner
     private lateinit var methodSpinner: Spinner
     private lateinit var search: EditText
+    private lateinit var menuButton: Button
 
     private val dataSource = NetworkDebuggerDataSource()
     private val allItems = mutableListOf<JSONObject>()
@@ -104,124 +109,293 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        WebUiTheme.applySaved(this)
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = bg
+        window.navigationBarColor = bg
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !WebUiTheme.palette(this@NetworkDebuggerActivity).dark
+            isAppearanceLightNavigationBars = !WebUiTheme.palette(this@NetworkDebuggerActivity).dark
+        }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(bg)
         }
 
-        val toolbarScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            setBackgroundColor(panel)
-        }
-        val toolbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8),dp(5),dp(8),dp(5))
-        }
-        recordButton = compactButton("") {
-            NetworkDebugStore.recording = !NetworkDebugStore.recording
-            updateRecordButton()
-        }
-        updateRecordButton()
-        toolbar.addView(recordButton)
-        toolbar.addView(compactButton("Очистить") { NetworkDebugStore.clear(); refreshIncremental(force = true) })
-        toolbar.addView(compactButton("ZIP") { exportZip() })
-        mergeButton = compactButton("") { mergeMode = !mergeMode; updateMergeButton(); applyFilters() }
-        toolbar.addView(mergeButton)
-        updateMergeButton()
-        apiButton = compactButton("") { apiOnly = !apiOnly; updateApiButton(); applyFilters() }
-        toolbar.addView(apiButton)
-        updateApiButton()
-        endpointButton = compactButton("") { endpointMode = !endpointMode; updateEndpointButton(); applyFilters() }
-        toolbar.addView(endpointButton)
-        updateEndpointButton()
-        toolbarScroll.addView(toolbar)
-        root.addView(toolbarScroll, LinearLayout.LayoutParams(-1,dp(48)))
-
-        val filterScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            setBackgroundColor(bg)
-            isFillViewport = true
-        }
-        val filterRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8),dp(5),dp(8),dp(5))
-        }
-
-        domainSpinner = Spinner(this,Spinner.MODE_DROPDOWN)
-        typeSpinner = Spinner(this,Spinner.MODE_DROPDOWN)
-        methodSpinner = Spinner(this,Spinner.MODE_DROPDOWN)
+        domainSpinner = Spinner(this, Spinner.MODE_DROPDOWN)
+        typeSpinner = Spinner(this, Spinner.MODE_DROPDOWN)
+        methodSpinner = Spinner(this, Spinner.MODE_DROPDOWN)
         typeSpinner.adapter = spinnerAdapter(typeFilters)
         methodSpinner.adapter = spinnerAdapter(methodFilters)
         attachFilterListener(typeSpinner)
         attachFilterListener(methodSpinner)
 
-        filterRow.addView(filterCard("ДОМЕН",domainSpinner,dp(178)))
-        filterRow.addView(filterCard("ТИП ОТВЕТА",typeSpinner,dp(104)),LinearLayout.LayoutParams(dp(104),dp(56)).apply{marginStart=dp(6)})
-        filterRow.addView(filterCard("МЕТОД",methodSpinner,dp(108)),LinearLayout.LayoutParams(dp(108),dp(56)).apply{marginStart=dp(6)})
-        filterScroll.addView(filterRow)
-        root.addView(filterScroll,LinearLayout.LayoutParams(-1,dp(66)))
-
-        val searchRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8),dp(2),dp(8),dp(4))
-        }
         search = EditText(this).apply {
+            visibility = View.GONE
             hint = "Поиск по URL, headers, body..."
             setHintTextColor(muted)
             setTextColor(textColor)
             textSize = 12f
             setSingleLine(true)
             imeOptions = EditorInfo.IME_ACTION_SEARCH
-            background = rounded(panel2,11f,line)
-            setPadding(dp(10),0,dp(10),0)
-            setOnEditorActionListener { _, id, _ -> if(id==EditorInfo.IME_ACTION_SEARCH){applyFilters();true}else false }
+            background = rounded(panel2, 11f, line)
+            setPadding(dp(10), 0, dp(10), 0)
+            setOnEditorActionListener { _, id, _ ->
+                if (id == EditorInfo.IME_ACTION_SEARCH) { applyFilters(); true } else false
+            }
         }
-        searchRow.addView(search,LinearLayout.LayoutParams(0,dp(40),1f))
-        searchRow.addView(compactButton("⌕"){applyFilters()},LinearLayout.LayoutParams(dp(44),dp(40)).apply{marginStart=dp(5)})
-        root.addView(searchRow,LinearLayout.LayoutParams(-1,dp(46)))
 
         counter = TextView(this).apply {
+            visibility = View.GONE
             setTextColor(muted)
             textSize = 10f
             typeface = Typeface.MONOSPACE
-            setPadding(dp(12),dp(2),dp(12),dp(5))
         }
-        root.addView(counter)
 
         list = ListView(this).apply {
             divider = null
             dividerHeight = dp(2)
             setBackgroundColor(bg)
-            setPadding(dp(4),0,dp(4),dp(4))
+            setPadding(dp(4), dp(4), dp(4), dp(4))
             clipToPadding = false
         }
         adapter = EventAdapter()
         list.adapter = adapter
-        list.setOnItemClickListener { _,_,position,_ ->
+        list.setOnItemClickListener { _, _, position, _ ->
             val event = items[position]
             when {
                 isActionEvent(event) -> Unit
                 isEndpointGroup(event) -> showEndpointGroup(event)
                 isRealtimeSession(event) -> showRealtimeSession(event)
-                else -> showDetails(event,search.text.toString().trim())
+                else -> showDetails(event, search.text.toString().trim())
             }
         }
-        root.addView(list,LinearLayout.LayoutParams(-1,0,1f))
+        root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(5), dp(6), dp(6))
+            setBackgroundColor(panel)
+        }
+        fun addControl(button: Button) {
+            controls.addView(button, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(5) })
+        }
+        addControl(chromeButton("←", "Назад") { finish() })
+        addControl(chromeButton("⌄", "Фильтр домена") { showDomainPopup(it) })
+        addControl(chromeButton("⌕", "Поиск") { showSearchPopup(it) })
+        recordButton = chromeButton(if (NetworkDebugStore.recording) "■" else "●", if (NetworkDebugStore.recording) "Остановить запись" else "Начать запись") {
+            NetworkDebugStore.recording = !NetworkDebugStore.recording
+            updateRecordButton()
+        }
+        addControl(recordButton)
+        addControl(chromeButton("⌫", "Очистить журнал") {
+            NetworkDebugStore.clear()
+            refreshIncremental(force = true)
+        })
+        menuButton = chromeButton("☰", "Меню") { showNetworkMenu(it) }
+        controls.addView(menuButton, LinearLayout.LayoutParams(dp(44), dp(44)))
+        root.addView(controls, LinearLayout.LayoutParams(-1, dp(55)))
 
         setContentView(root)
-        ViewCompat.setOnApplyWindowInsetsListener(root){v,i->
-            val bars:Insets=i.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(bars.left,bars.top,bars.right,bars.bottom)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, i ->
+            val bars: Insets = i.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             i
         }
         ViewCompat.requestApplyInsets(root)
         refreshIncremental(force = true)
+    }
+
+    private fun chromeButton(symbol: String, description: String, click: (View) -> Unit) = Button(this).apply {
+        text = symbol
+        contentDescription = description
+        setTextColor(accent)
+        textSize = 19f
+        isAllCaps = false
+        minWidth = 0
+        minimumWidth = 0
+        minHeight = 0
+        minimumHeight = 0
+        setPadding(0, 0, 0, 0)
+        background = rounded(panel2, 11f, line)
+        setOnClickListener { click(this) }
+    }
+
+    private fun showDomainPopup(anchor: View) {
+        val values = if (domains.isEmpty()) listOf("Все домены") else domains.toList()
+        showSelectionPopup(anchor, "Домен", values, selected(domainSpinner, "Все домены")) { value ->
+            val index = domains.indexOf(value)
+            if (index >= 0) domainSpinner.setSelection(index)
+            applyFilters()
+        }
+    }
+
+    private fun showSearchPopup(anchor: View) {
+        var popup: PopupWindow? = null
+        val content = popupPanel()
+        content.addView(popupHeader("Поиск") { popup?.dismiss() })
+        val input = EditText(this).apply {
+            setText(search.text)
+            setSelection(text.length)
+            hint = "URL, headers, body..."
+            setHintTextColor(muted)
+            setTextColor(textColor)
+            textSize = 12f
+            setSingleLine(true)
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
+            background = rounded(panel2, 11f, line)
+            setPadding(dp(10), 0, dp(10), 0)
+            setOnEditorActionListener { _, id, _ ->
+                if (id == EditorInfo.IME_ACTION_SEARCH) {
+                    search.setText(text)
+                    applyFilters()
+                    popup?.dismiss()
+                    true
+                } else false
+            }
+        }
+        content.addView(input, LinearLayout.LayoutParams(-1, dp(42)).apply { setMargins(dp(8), dp(5), dp(8), dp(7)) })
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.addView(popupAction("Очистить") {
+            search.setText("")
+            applyFilters()
+            popup?.dismiss()
+        }, LinearLayout.LayoutParams(0, dp(42), 1f))
+        actions.addView(popupAction("Найти") {
+            search.setText(input.text)
+            applyFilters()
+            popup?.dismiss()
+        }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(6) })
+        content.addView(actions, LinearLayout.LayoutParams(-1, dp(42)).apply { setMargins(dp(8), 0, dp(8), dp(8)) })
+        popup = buildPopup(content, 310)
+        showAboveRight(popup, content, anchor, 310)
+        input.requestFocus()
+    }
+
+    private fun showNetworkMenu(anchor: View) {
+        var popup: PopupWindow? = null
+        val content = popupPanel()
+        content.addView(popupHeader("Фильтры и режимы") { popup?.dismiss() })
+        content.addView(popupRow(if (mergeMode) "Объединено ✓" else "Раздельно", mergeMode) {
+            mergeMode = !mergeMode
+            updateMergeButton()
+            applyFilters()
+            popup?.dismiss()
+        })
+        content.addView(popupRow(if (apiOnly) "API ✓" else "API", apiOnly) {
+            apiOnly = !apiOnly
+            updateApiButton()
+            applyFilters()
+            popup?.dismiss()
+        })
+        content.addView(popupRow(if (endpointMode) "ENDPOINT ✓" else "ENDPOINT", endpointMode) {
+            endpointMode = !endpointMode
+            updateEndpointButton()
+            applyFilters()
+            popup?.dismiss()
+        })
+        content.addView(popupRow("Тип ответа: ${selected(typeSpinner, "ALL")}", selected(typeSpinner, "ALL") != "ALL") {
+            popup?.dismiss()
+            showSelectionPopup(anchor, "Тип ответа", typeFilters, selected(typeSpinner, "ALL")) { value ->
+                typeSpinner.setSelection(typeFilters.indexOf(value).coerceAtLeast(0))
+                applyFilters()
+            }
+        })
+        content.addView(popupRow("Метод: ${selected(methodSpinner, "ALL")}", selected(methodSpinner, "ALL") != "ALL") {
+            popup?.dismiss()
+            showSelectionPopup(anchor, "Метод", methodFilters, selected(methodSpinner, "ALL")) { value ->
+                methodSpinner.setSelection(methodFilters.indexOf(value).coerceAtLeast(0))
+                applyFilters()
+            }
+        })
+        content.addView(popupRow("Экспорт ZIP", false) {
+            popup?.dismiss()
+            exportZip()
+        })
+        popup = buildPopup(content, 275)
+        showAboveRight(popup, content, anchor, 275)
+    }
+
+    private fun showSelectionPopup(anchor: View, title: String, values: List<String>, current: String, onSelect: (String) -> Unit) {
+        var popup: PopupWindow? = null
+        val content = popupPanel()
+        content.addView(popupHeader(title) { popup?.dismiss() })
+        val scrollBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        values.forEach { value ->
+            scrollBody.addView(popupRow(if (value == current) "$value ✓" else value, value == current) {
+                onSelect(value)
+                popup?.dismiss()
+            })
+        }
+        val scroll = ScrollView(this).apply { addView(scrollBody) }
+        content.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        popup = buildPopup(content, 285, maxHeight = (resources.displayMetrics.heightPixels * 0.64f).toInt())
+        showAboveRight(popup, content, anchor, 285)
+    }
+
+    private fun popupPanel() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(6), dp(6), dp(6), dp(6))
+        background = rounded(panel, 16f, line)
+    }
+
+    private fun popupHeader(title: String, close: () -> Unit) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(chromeButton("×", "Закрыть") { close() }, LinearLayout.LayoutParams(dp(38), dp(38)))
+        addView(TextView(this@NetworkDebuggerActivity).apply {
+            text = title
+            setTextColor(textColor)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(9), 0, 0, 0)
+        }, LinearLayout.LayoutParams(0, dp(38), 1f))
+    }
+
+    private fun popupRow(label: String, active: Boolean, click: () -> Unit) = Button(this).apply {
+        text = label
+        isAllCaps = false
+        gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        textSize = 12.5f
+        setTextColor(if (active) accent else textColor)
+        minHeight = 0
+        minimumHeight = 0
+        setPadding(dp(12), 0, dp(12), 0)
+        background = rounded(if (active) panel2 else panel, 10f, line)
+        setOnClickListener { click() }
+        layoutParams = LinearLayout.LayoutParams(-1, dp(42)).apply { setMargins(dp(3), dp(2), dp(3), dp(2)) }
+    }
+
+    private fun popupAction(label: String, click: () -> Unit) = Button(this).apply {
+        text = label
+        isAllCaps = false
+        textSize = 12f
+        setTextColor(textColor)
+        background = rounded(panel2, 11f, line)
+        setOnClickListener { click() }
+    }
+
+    private fun buildPopup(content: LinearLayout, widthDp: Int, maxHeight: Int = WindowManager.LayoutParams.WRAP_CONTENT): PopupWindow {
+        return PopupWindow(content, dp(widthDp), maxHeight, true).apply {
+            isOutsideTouchable = true
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            elevation = dp(10).toFloat()
+        }
+    }
+
+    private fun showAboveRight(popup: PopupWindow, content: View, anchor: View, widthDp: Int) {
+        val width = dp(widthDp)
+        content.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        if (popup.height == WindowManager.LayoutParams.WRAP_CONTENT) popup.height = content.measuredHeight
+        val height = if (popup.height > 0) popup.height else content.measuredHeight
+        popup.showAsDropDown(anchor, anchor.width - width, -height - anchor.height)
     }
 
     override fun onResume(){
@@ -249,8 +423,9 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
     private fun updateRecordButton(){
         if(::recordButton.isInitialized){
-            recordButton.text=if(NetworkDebugStore.recording)"● REC" else "○ STOP"
-            recordButton.setTextColor(if(NetworkDebugStore.recording)accent else muted)
+            recordButton.text = if(NetworkDebugStore.recording) "■" else "●"
+            recordButton.contentDescription = if(NetworkDebugStore.recording) "Остановить запись" else "Начать запись"
+            recordButton.setTextColor(if(NetworkDebugStore.recording) accent else muted)
         }
     }
 
@@ -523,56 +698,71 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
     private fun showEndpointGroup(group:JSONObject){
         val arr=group.optJSONArray("_groupEvents")?:return
-        val events=mutableListOf<JSONObject>()
-        val labels=mutableListOf<String>()
+        val dialog=Dialog(this)
+        dialog.setCancelable(true)
+        dialog.setCanceledOnTouchOutside(false)
+        val root=toolDialogRoot(dialog,"${group.optString("_groupMethod")} ${group.optString("url")} ×${arr.length()}")
+        val body=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
         for(i in 0 until arr.length()){
             val e=arr.optJSONObject(i)?:continue
-            events.add(e)
-            labels.add(buildString{
+            val label=buildString{
                 append(if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---")
                 append("  ").append(methodOf(e))
                 if(e.optInt("status",0)>0)append("  ").append(e.optInt("status"))
                 if(e.has("duration"))append("  ").append(formatDuration(e.optDouble("duration",0.0)))
-                append("\n").append(e.optString("url",""))
-            })
+                append("
+").append(e.optString("url",""))
+            }
+            body.addView(Button(this).apply{
+                text=label;isAllCaps=false;gravity=Gravity.START or Gravity.CENTER_VERTICAL;setTextColor(textColor);textSize=10f;typeface=Typeface.MONOSPACE;minHeight=0;minimumHeight=0;setPadding(dp(10),dp(7),dp(10),dp(7));background=rounded(panel2,9f,line);setOnClickListener{dialog.dismiss();showDetails(e,search.text.toString().trim())}
+            },LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(3),0,dp(3))})
         }
-        AlertDialog.Builder(this)
-            .setTitle("${group.optString("_groupMethod")} ${group.optString("url")} ×${events.size}")
-            .setItems(labels.toTypedArray()){dialog,index->dialog.dismiss();showDetails(events[index],search.text.toString().trim())}
-            .setNegativeButton("Закрыть",null)
-            .show()
+        root.addView(ScrollView(this).apply{addView(body)},LinearLayout.LayoutParams(-1,0,1f))
+        showToolDialog(dialog,root,.96f,.86f)
     }
 
     private fun showRealtimeSession(session:JSONObject){
         val arr=session.optJSONArray("_sessionEvents")?:return
-        val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(10),dp(8),dp(10),dp(8));setBackgroundColor(bg)}
-        root.addView(TextView(this).apply{
-            text="${session.optString("_realtimeProtocol")}  ${session.optString("url")}";setTextColor(cyan);textSize=12f;typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD);setTextIsSelectable(true)
-        })
+        val dialog=Dialog(this)
+        dialog.setCancelable(true)
+        dialog.setCanceledOnTouchOutside(false)
+        val root=toolDialogRoot(dialog,"Realtime session · ${arr.length()} событий")
+        val body=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
+        body.addView(TextView(this).apply{text="${session.optString("_realtimeProtocol")}  ${session.optString("url")}";setTextColor(cyan);textSize=11f;typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD);setTextIsSelectable(true);setPadding(dp(8),dp(6),dp(8),dp(6))})
         val copyText=StringBuilder()
         for(i in 0 until arr.length()){
             val e=arr.optJSONObject(i)?:continue
             val source=e.optString("source","")
-            val direction=when{
-                source.endsWith("-send")->"SEND"
-                source.endsWith("-receive")||source.endsWith("-message")->"RECEIVE"
-                source.endsWith("-open")->"OPEN"
-                else->source.uppercase(Locale.US)
-            }
+            val direction=when{source.endsWith("-send")->"SEND";source.endsWith("-receive")||source.endsWith("-message")->"RECEIVE";source.endsWith("-open")->"OPEN";else->source.uppercase(Locale.US)}
             val data=e.optString("data",e.optString("message",e.optString("state","")))
-            val displayLine="${if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"}  $direction${if(data.isNotBlank())"\n$data" else ""}"
-            copyText.append(displayLine).append("\n\n")
-            root.addView(TextView(this).apply{
-                text=displayLine;setTextColor(if(direction=="SEND")amber else if(direction=="RECEIVE")accent else muted);textSize=10.5f;typeface=Typeface.MONOSPACE;setTextIsSelectable(true);setPadding(dp(9),dp(8),dp(9),dp(8));background=rounded(panel2,9f,line)
-            },LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(4),0,dp(4))})
+            val displayLine="${if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"}  $direction${if(data.isNotBlank())"
+$data" else ""}"
+            copyText.append(displayLine).append("
+
+")
+            body.addView(TextView(this).apply{text=displayLine;setTextColor(if(direction=="SEND")amber else if(direction=="RECEIVE")accent else muted);textSize=10.5f;typeface=Typeface.MONOSPACE;setTextIsSelectable(true);setPadding(dp(9),dp(8),dp(9),dp(8));background=rounded(panel2,9f,line)},LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(3),0,dp(3))})
         }
-        val scroll=ScrollView(this).apply{addView(root)}
-        AlertDialog.Builder(this)
-            .setTitle("Realtime session · ${arr.length()} событий")
-            .setView(scroll)
-            .setPositiveButton("Копировать"){_,_->copyText("REALTIME",copyText.toString().trim())}
-            .setNegativeButton("Закрыть",null)
-            .show()
+        root.addView(ScrollView(this).apply{addView(body)},LinearLayout.LayoutParams(-1,0,1f))
+        root.addView(compactButton("Копировать"){copyText("REALTIME",copyText.toString().trim())},LinearLayout.LayoutParams(-1,dp(42)).apply{setMargins(0,dp(5),0,0)})
+        showToolDialog(dialog,root,.96f,.88f)
+    }
+
+    private fun toolDialogRoot(dialog:Dialog,title:String)=LinearLayout(this).apply{
+        orientation=LinearLayout.VERTICAL;setPadding(dp(8),dp(8),dp(8),dp(8));background=rounded(bg,18f,line)
+        addView(LinearLayout(this@NetworkDebuggerActivity).apply{
+            orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL;background=rounded(panel,12f,line);setPadding(dp(5),dp(4),dp(8),dp(4))
+            addView(chromeButton("×","Закрыть"){dialog.dismiss()},LinearLayout.LayoutParams(dp(40),dp(40)))
+            addView(TextView(this@NetworkDebuggerActivity).apply{text=title;setTextColor(textColor);textSize=13f;typeface=Typeface.DEFAULT_BOLD;gravity=Gravity.CENTER_VERTICAL;setPadding(dp(9),0,0,0);maxLines=2},LinearLayout.LayoutParams(0,dp(40),1f))
+        },LinearLayout.LayoutParams(-1,dp(48)).apply{bottomMargin=dp(6)})
+    }
+
+    private fun showToolDialog(dialog:Dialog,root:View,widthFraction:Float,heightFraction:Float){
+        dialog.setContentView(root)
+        dialog.setOnShowListener{
+            val dm=resources.displayMetrics
+            dialog.window?.apply{setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT));setLayout((dm.widthPixels*widthFraction).toInt(),(dm.heightPixels*heightFraction).toInt());setGravity(Gravity.CENTER)}
+        }
+        dialog.show()
     }
 
     private fun showDetails(event:JSONObject,query:String){
@@ -594,14 +784,12 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         val header=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;background=rounded(panel,14f,line);setPadding(dp(12),dp(10),dp(12),dp(10))}
         val titleRow=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL}
         val status=event.optInt("status",0)
+        titleRow.addView(compactButton("×"){dialog?.dismiss()},LinearLayout.LayoutParams(dp(42),dp(34)).apply{marginEnd=dp(7)})
         titleRow.addView(TextView(this).apply{
-            text=buildString{
-                append(methodOf(event));if(status>0)append("  ").append(status);if(event.has("duration"))append("  ").append(formatDuration(event.optDouble("duration",0.0)));if(event.has("responseSize"))append("  ").append(formatBytes(event.optLong("responseSize")))
-            }
+            text=buildString{append(methodOf(event));if(status>0)append("  ").append(status);if(event.has("duration"))append("  ").append(formatDuration(event.optDouble("duration",0.0)));if(event.has("responseSize"))append("  ").append(formatBytes(event.optLong("responseSize")))}
             setTextColor(if(status>=400||event.has("error"))bad else accent);textSize=14f;typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD)
         },LinearLayout.LayoutParams(0,-2,1f))
         titleRow.addView(chip(responseKind(event),kindColor(responseKind(event))))
-        titleRow.addView(compactButton("✕"){dialog?.dismiss()},LinearLayout.LayoutParams(dp(42),dp(34)).apply{marginStart=dp(7)})
         header.addView(titleRow)
         header.addView(TextView(this).apply{text=url;setTextColor(textColor);textSize=11f;typeface=Typeface.MONOSPACE;setTextIsSelectable(true);setPadding(0,dp(7),0,0)})
         val flags=rowFlags(event)
@@ -610,9 +798,8 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
         val actionScroll=HorizontalScrollView(this).apply{isHorizontalScrollBarEnabled=false}
         val actions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL}
-        actions.addView(detailButton("URL"){copyText("URL",url)})
         actions.addView(detailButton("cURL"){copyText("cURL",buildCurl(event))})
-        actions.addView(detailButton("POSTMAN JSON"){copyText("POSTMAN JSON",PostmanRequestExporter.build(event,methodOf(event),requestCookies))})
+        actions.addView(detailButton("POSTMAN JSON"){PostmanDelivery.deliver(this,PostmanRequestExporter.build(event,methodOf(event),requestCookies),url)})
         actions.addView(detailButton("REQUEST"){copyText("REQUEST",buildRequestText(event,requestCookies))})
         actions.addView(detailButton("REQ HEADERS"){copyText("REQUEST HEADERS",formatHeaders(requestHeadersList))})
         actions.addView(detailButton("RESPONSE"){copyText("RESPONSE",buildResponseCopy(event,requestCookies))})
@@ -702,16 +889,17 @@ class NetworkDebuggerActivity : AppCompatActivity() {
 
         val scroll=ScrollView(this).apply{setBackgroundColor(bg);addView(content)}
         root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
-        dialog=AlertDialog.Builder(this).setView(root).create()
+        val detailsDialog=AlertDialog.Builder(this).setView(root).create()
+        dialog=detailsDialog
         val dm=resources.displayMetrics
-        dialog.window?.apply{
-            setBackgroundDrawable(rounded(bg,18f,line))
-            attributes=attributes.apply{
-                width=(dm.widthPixels*0.97).toInt()
-                height=(dm.heightPixels*0.92).toInt()
+        detailsDialog.setOnShowListener{
+            detailsDialog.window?.apply{
+                setBackgroundDrawable(rounded(bg,18f,line))
+                setLayout((dm.widthPixels*0.97).toInt(),(dm.heightPixels*0.92).toInt())
+                setGravity(Gravity.CENTER)
             }
         }
-        dialog.show()
+        detailsDialog.show()
     }
 
     private fun canFetchBody(event:JSONObject):Boolean{

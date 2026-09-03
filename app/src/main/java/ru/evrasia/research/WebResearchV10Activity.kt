@@ -155,7 +155,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         }
         networkButton = iconButton(TechIconDrawable.Kind.NETWORK, true) {
             ensureInstrumentation()
-            startActivity(Intent(this, NetworkResearchActivity::class.java))
+            startActivity(Intent(this, NetworkDebuggerActivity::class.java))
         }
         networkContainer.addView(networkButton, FrameLayout.LayoutParams(dp(46), dp(46), Gravity.CENTER))
         networkBadge = TextView(this).apply {
@@ -342,6 +342,10 @@ class WebResearchV10Activity : AppCompatActivity() {
                 dialog.dismiss()
                 showExportSheet()
             }
+            addMenuRow("{ }", "POSTMAN JSON", "Режим: ${PostmanDelivery.modeLabel(this@WebResearchV10Activity)}") {
+                dialog.dismiss()
+                showPostmanModePicker()
+            }
 
             addSection("ИНТЕРФЕЙС")
             addMenuRow("◐", "Тема", WebUiTheme.savedMode(this@WebResearchV10Activity).label) {
@@ -516,12 +520,18 @@ class WebResearchV10Activity : AppCompatActivity() {
             webViewController.clearCurrentDomainCookies()
             return
         }
-        AlertDialog.Builder(this)
-            .setTitle("Удалить cookies?")
-            .setMessage("Удалить $count cookies для ${currentHost()}?")
-            .setPositiveButton("Удалить") { _, _ -> webViewController.clearCurrentDomainCookies() }
-            .setNegativeButton("Отмена", null)
-            .show()
+        showBottomSheet("Удалить cookies?") { dialog ->
+            addView(TextView(this@WebResearchV10Activity).apply {
+                text = "Удалить $count cookies для ${currentHost()}?"
+                setTextColor(palette.text)
+                textSize = 14f
+                setPadding(dp(14), dp(8), dp(14), dp(14))
+            })
+            addDangerButton("Удалить") {
+                dialog.dismiss()
+                webViewController.clearCurrentDomainCookies()
+            }
+        }
     }
 
     private fun showExportSheet() {
@@ -547,18 +557,38 @@ class WebResearchV10Activity : AppCompatActivity() {
         }
     }
 
-    private fun showThemePicker() {
-        val modes = WebUiTheme.Mode.entries.toTypedArray()
-        val labels = modes.map { it.label }.toTypedArray()
-        val selected = modes.indexOf(WebUiTheme.savedMode(this))
-        AlertDialog.Builder(this)
-            .setTitle("Тема")
-            .setSingleChoiceItems(labels, selected) { dialog, which ->
-                WebUiTheme.save(this, modes[which])
+    private fun showPostmanModePicker() {
+        showBottomSheet("POSTMAN JSON") { dialog ->
+            addView(TextView(this@WebResearchV10Activity).apply {
+                text = "Выберите, куда отправлять JSON, сформированный для Postman."
+                setTextColor(palette.secondary)
+                textSize = 12.5f
+                setPadding(dp(14), dp(2), dp(14), dp(10))
+            })
+            val current = PostmanDelivery.mode(this@WebResearchV10Activity)
+            addMenuRow("▣", "Буфер обмена", if (current == PostmanDelivery.Mode.CLIPBOARD) "Текущий режим" else "Копировать JSON в буфер") {
+                PostmanDelivery.saveMode(this@WebResearchV10Activity, PostmanDelivery.Mode.CLIPBOARD)
                 dialog.dismiss()
+                Toast.makeText(this@WebResearchV10Activity, "POSTMAN JSON: буфер обмена", Toast.LENGTH_SHORT).show()
             }
-            .setNegativeButton("Отмена", null)
-            .show()
+            addMenuRow("⇩", "Файл", if (current == PostmanDelivery.Mode.FILE) "Текущий режим" else "Сохранить или отправить JSON-файл") {
+                PostmanDelivery.saveMode(this@WebResearchV10Activity, PostmanDelivery.Mode.FILE)
+                dialog.dismiss()
+                Toast.makeText(this@WebResearchV10Activity, "POSTMAN JSON: файл", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun showThemePicker() {
+        showBottomSheet("Тема") { dialog ->
+            val current = WebUiTheme.savedMode(this@WebResearchV10Activity)
+            WebUiTheme.Mode.entries.forEach { mode ->
+                addMenuRow("◐", mode.label, if (mode == current) "Текущая тема" else "") {
+                    WebUiTheme.save(this@WebResearchV10Activity, mode)
+                    dialog.dismiss()
+                }
+            }
+        }
     }
 
     private fun showAccentPicker() {
@@ -623,11 +653,17 @@ class WebResearchV10Activity : AppCompatActivity() {
 
     private fun showAbout() {
         val version = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "dev" } catch (_: Exception) { "dev" }
-        AlertDialog.Builder(this)
-            .setTitle("web research")
-            .setMessage("Версия приложения: $version\nРелиз: $version\n\nМобильный браузер для исследования сетевого взаимодействия сайтов.")
-            .setPositiveButton("OK", null)
-            .show()
+        showBottomSheet("web research") { _ ->
+            addView(TextView(this@WebResearchV10Activity).apply {
+                text = "Версия приложения: $version
+Релиз: $version
+
+Мобильный браузер для исследования сетевого взаимодействия сайтов."
+                setTextColor(palette.text)
+                textSize = 14f
+                setPadding(dp(14), dp(6), dp(14), dp(18))
+            })
+        }
     }
 
     private fun showBottomSheet(title: String, build: LinearLayout.(Dialog) -> Unit) {
@@ -639,13 +675,34 @@ class WebResearchV10Activity : AppCompatActivity() {
             setPadding(dp(6), dp(12), dp(6), dp(16))
             background = rounded(palette.card, 22f, palette.divider)
         }
-        panel.addView(TextView(this).apply {
+        val sheetHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(2), dp(8), dp(8))
+        }
+        sheetHeader.addView(Button(this).apply {
+            text = "×"
+            contentDescription = "Закрыть"
+            setTextColor(palette.accent)
+            textSize = 19f
+            isAllCaps = false
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(0, 0, 0, 0)
+            background = rounded(palette.address, 11f, palette.divider)
+            setOnClickListener { dialog.dismiss() }
+        }, LinearLayout.LayoutParams(dp(40), dp(40)))
+        sheetHeader.addView(TextView(this).apply {
             text = title
             setTextColor(palette.text)
             textSize = 18f
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(12), dp(2), dp(12), dp(10))
-        })
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), 0, 0, 0)
+        }, LinearLayout.LayoutParams(0, dp(40), 1f))
+        panel.addView(sheetHeader)
         panel.build(dialog)
         val scroll = ScrollView(this).apply {
             isFillViewport = true
@@ -653,19 +710,14 @@ class WebResearchV10Activity : AppCompatActivity() {
             addView(panel, ViewGroup.LayoutParams(-1, -2))
         }
         dialog.setContentView(scroll)
-        dialog.window?.apply {
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            attributes = attributes.apply {
-                width = WindowManager.LayoutParams.MATCH_PARENT
-                height = WindowManager.LayoutParams.WRAP_CONTENT
-                gravity = Gravity.BOTTOM
-                dimAmount = 0.35f
-            }
-        }
         dialog.setOnShowListener {
-            dialog.window?.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
-            dialog.window?.setGravity(Gravity.BOTTOM)
+            dialog.window?.apply {
+                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+                setGravity(Gravity.BOTTOM)
+                attributes = attributes.apply { dimAmount = 0.35f }
+            }
         }
         dialog.show()
     }

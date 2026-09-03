@@ -1,19 +1,6 @@
-import org.gradle.api.tasks.Exec
-
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 
 val stableStore = rootProject.file("webresearch.keystore")
-
-val materializeV79 = tasks.register<Exec>("materializeV79") {
-    val patch = rootProject.file("scripts/apply_v79.py")
-    onlyIf { patch.exists() }
-    workingDir(rootProject.projectDir)
-    commandLine("python3", patch.absolutePath)
-}
-
-tasks.matching { it.name == "preBuild" }.configureEach {
-    dependsOn(materializeV79)
-}
 
 android {
     namespace = "ru.evrasia.research"
