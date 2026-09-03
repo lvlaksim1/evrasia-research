@@ -5,13 +5,13 @@ import org.json.JSONObject
 
 /**
  * Explicit boundary between the raw research archive and the correlated debugger view.
- * Exported raw records are redacted, while the live debugger keeps exact values for
- * dependency reconstruction. Request-header aliases are normalized only for the
- * debugger copy so merged events retain native browser headers.
+ * Raw records are preserved byte-for-byte at the JSON value level for exact research exports.
+ * Request-header aliases are normalized only for the debugger copy so merged events retain
+ * native browser headers without changing the captured archive.
  */
 internal object NetworkRecordPipeline {
     fun appendRawAndDebug(rawRecords: JSONArray, record: JSONObject) {
-        rawRecords.put(ResearchSecretRedactor.copyForArchive(record))
+        rawRecords.put(record)
         NetworkDebugStore.add(normalizeForDebugger(record))
     }
 
