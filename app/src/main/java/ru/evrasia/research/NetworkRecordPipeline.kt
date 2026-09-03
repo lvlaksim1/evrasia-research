@@ -31,10 +31,16 @@ internal object NetworkRecordPipeline {
             val keys = legacy.keys()
             while (keys.hasNext()) {
                 val key = keys.next()
-                if (!request.has(key)) request.put(key, legacy.opt(key))
+                if (!hasHeader(request, key)) request.put(key, legacy.opt(key))
             }
         }
         if (request.length() > 0) copy.put("requestHeaders", request)
         return copy
+    }
+
+    private fun hasHeader(headers: JSONObject, name: String): Boolean {
+        val keys = headers.keys()
+        while (keys.hasNext()) if (keys.next().equals(name, true)) return true
+        return false
     }
 }
