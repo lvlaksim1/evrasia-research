@@ -78,7 +78,7 @@ internal class AuthSessionController(
                 val initialAuthSource = beforeAuthSource
                 val result = UniversalAuthAnalyzerV2.analyze(events, before, after, initialAuthSource)
                 val environment = try {
-                    PostmanEnvironmentSnapshot.build(result.collectionJson, events, initialAuthSource)
+                    PostmanEnvironmentSnapshotSafe.build(result.collectionJson, events, initialAuthSource)
                 } catch (_: Exception) {
                     ""
                 }
