@@ -342,10 +342,6 @@ class WebResearchV10Activity : AppCompatActivity() {
                 dialog.dismiss()
                 showExportSheet()
             }
-            addMenuRow("{ }", "POSTMAN JSON", "Режим: ${PostmanDelivery.modeLabel(this@WebResearchV10Activity)}") {
-                dialog.dismiss()
-                showPostmanModePicker()
-            }
 
             addSection("ИНТЕРФЕЙС")
             addMenuRow("◐", "Тема", WebUiTheme.savedMode(this@WebResearchV10Activity).label) {
@@ -502,10 +498,8 @@ class WebResearchV10Activity : AppCompatActivity() {
                     })
                     addDivider()
                 }
-                addPrimaryButton("Копировать cookies") {
-                    val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    manager.setPrimaryClip(ClipData.newPlainText("cookies", raw))
-                    Toast.makeText(this@WebResearchV10Activity, "Cookies скопированы", Toast.LENGTH_SHORT).show()
+                addPrimaryButton("Действия с cookies") {
+                    ResultDelivery.deliverText(this@WebResearchV10Activity, "Cookies", raw, ResultDelivery.defaultFileName("cookies-${currentHost()}", raw), "text/plain")
                 }
                 addDangerButton("Удалить cookies домена") {
                     dialog.dismiss()
@@ -557,27 +551,6 @@ class WebResearchV10Activity : AppCompatActivity() {
         }
     }
 
-    private fun showPostmanModePicker() {
-        showBottomSheet("POSTMAN JSON") { dialog ->
-            addView(TextView(this@WebResearchV10Activity).apply {
-                text = "Выберите, куда отправлять JSON, сформированный для Postman."
-                setTextColor(palette.secondary)
-                textSize = 12.5f
-                setPadding(dp(14), dp(2), dp(14), dp(10))
-            })
-            val current = PostmanDelivery.mode(this@WebResearchV10Activity)
-            addMenuRow("▣", "Буфер обмена", if (current == PostmanDelivery.Mode.CLIPBOARD) "Текущий режим" else "Копировать JSON в буфер") {
-                PostmanDelivery.saveMode(this@WebResearchV10Activity, PostmanDelivery.Mode.CLIPBOARD)
-                dialog.dismiss()
-                Toast.makeText(this@WebResearchV10Activity, "POSTMAN JSON: буфер обмена", Toast.LENGTH_SHORT).show()
-            }
-            addMenuRow("⇩", "Файл", if (current == PostmanDelivery.Mode.FILE) "Текущий режим" else "Сохранить или отправить JSON-файл") {
-                PostmanDelivery.saveMode(this@WebResearchV10Activity, PostmanDelivery.Mode.FILE)
-                dialog.dismiss()
-                Toast.makeText(this@WebResearchV10Activity, "POSTMAN JSON: файл", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
 
     private fun showThemePicker() {
         showBottomSheet("Тема") { dialog ->
