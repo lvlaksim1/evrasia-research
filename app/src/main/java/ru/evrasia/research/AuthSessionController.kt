@@ -17,6 +17,8 @@ internal class AuthSessionController(
     private var startRevision = -1L
     private var startTime = 0L
     private var beforeState: AuthFlowAnalyzer.BrowserState? = null
+    private var beforeAuthSource = ""
+    private var lastAuthSource = ""
     private var previousRecording = true
     private val handler = Handler(Looper.getMainLooper())
     private val hookRefresh = object : Runnable {
@@ -41,6 +43,7 @@ internal class AuthSessionController(
         startTime = System.currentTimeMillis()
         captureState { state ->
             beforeState = state
+            beforeAuthSource = lastAuthSource
             active = true
             handler.removeCallbacks(hookRefresh)
             handler.post(hookRefresh)
@@ -63,6 +66,7 @@ internal class AuthSessionController(
             val delta = NetworkDebugStore.delta(startRevision)
             restoreRecording()
             if (before == null) {
+                beforeAuthSource = ""
                 Toast.makeText(activity, "Не найден начальный снимок AUTH-сессии", Toast.LENGTH_LONG).show()
                 return@captureState
             }
@@ -71,7 +75,8 @@ internal class AuthSessionController(
                 time <= 0L || time >= startTime - 1500L
             }
             try {
-                val result = UniversalAuthAnalyzer.analyze(events, before, after)
+                val result = UniversalAuthAnalyzerV2.analyze(events, before, after, beforeAuthSource)
+                beforeAuthSource = ""
                 Toast.makeText(
                     activity,
                     "AUTH: ${result.confidence} · ${result.requestCount} запросов",
@@ -83,6 +88,7 @@ internal class AuthSessionController(
                     result.loginUrl.ifBlank { after.url.ifBlank { before.url } }
                 )
             } catch (error: Exception) {
+                beforeAuthSource = ""
                 Toast.makeText(
                     activity,
                     "AUTH-анализ: ${error.message ?: "не удалось построить коллекцию"}",
@@ -98,6 +104,8 @@ internal class AuthSessionController(
         disableAuthHooks()
         active = false
         beforeState = null
+        beforeAuthSource = ""
+        lastAuthSource = ""
         restoreRecording()
     }
 
@@ -115,18 +123,39 @@ internal class AuthSessionController(
                 try{for(var i=0;i<s.length;i++){var k=s.key(i);o[k]=s.getItem(k)}}catch(e){o.__error=String(e)}
                 return o;
               }
+              function authSource(){
+                var parts=[];
+                var size=0;
+                var limit=1000000;
+                function add(value){
+                  try{
+                    value=String(value||'');
+                    if(!value||size>=limit)return;
+                    var left=limit-size;
+                    if(value.length>left)value=value.slice(0,left);
+                    parts.push(value);
+                    size+=value.length;
+                  }catch(e){}
+                }
+                try{for(const node of Array.from(document.querySelectorAll('form'))){add(node.outerHTML)}}catch(e){}
+                try{for(const node of Array.from(document.querySelectorAll('meta'))){add(node.outerHTML)}}catch(e){}
+                try{for(const node of Array.from(document.querySelectorAll('script:not([src])'))){add(node.textContent||'')}}catch(e){}
+                return parts.join('\n');
+              }
               return JSON.stringify({
                 time:Date.now(),
                 url:location.href,
                 cookie:document.cookie,
                 localStorage:store(localStorage),
-                sessionStorage:store(sessionStorage)
+                sessionStorage:store(sessionStorage),
+                authSource:authSource()
               });
             })();
         """.trimIndent()
         web.evaluateJavascript(script) { raw ->
             activity.runOnUiThread {
                 val objectValue = decodeJavascriptJson(raw)
+                lastAuthSource = objectValue.optString("authSource", "")
                 val state = AuthFlowAnalyzer.BrowserState(
                     time = objectValue.optLong("time", System.currentTimeMillis()),
                     url = objectValue.optString("url", page),
