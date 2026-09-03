@@ -1,5 +1,7 @@
 package ru.evrasia.research
 
+import android.os.Handler
+import android.os.Looper
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.widget.Toast
@@ -16,6 +18,14 @@ internal class AuthSessionController(
     private var startTime = 0L
     private var beforeState: AuthFlowAnalyzer.BrowserState? = null
     private var previousRecording = true
+    private val handler = Handler(Looper.getMainLooper())
+    private val hookRefresh = object : Runnable {
+        override fun run() {
+            if (!active) return
+            injectAuthHooks()
+            handler.postDelayed(this, 700L)
+        }
+    }
 
     fun isActive(): Boolean = active
 
@@ -32,7 +42,8 @@ internal class AuthSessionController(
         captureState { state ->
             beforeState = state
             active = true
-            injectAuthHooks()
+            handler.removeCallbacks(hookRefresh)
+            handler.post(hookRefresh)
             Toast.makeText(
                 activity,
                 "AUTH-анализ запущен. Выполните вход на сайте и снова нажмите AUTH.",
@@ -43,6 +54,7 @@ internal class AuthSessionController(
 
     fun finish() {
         if (!active) return
+        handler.removeCallbacks(hookRefresh)
         disableAuthHooks()
         captureState { after ->
             val before = beforeState
@@ -82,6 +94,7 @@ internal class AuthSessionController(
 
     fun cancel() {
         if (!active) return
+        handler.removeCallbacks(hookRefresh)
         disableAuthHooks()
         active = false
         beforeState = null
