@@ -1,63 +1,35 @@
-name: Sync APK to Dropbox
+name: Upload v79 to Dropbox
 
 on:
-  workflow_run:
-    workflows: ["Build Android APK"]
-    types: [completed]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag to upload (for example v79)"
-        required: true
-        type: string
+  push:
+    branches: [dropbox-upload-v79]
 
 permissions:
   contents: read
 
 jobs:
   upload:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      - name: Determine release tag
-        id: release
+      - name: Download v79 APK from GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="$INPUT_TAG"
-          else
-            TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName')
-          fi
-          test -n "$TAG"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Release: $TAG"
+          gh release download v79 --repo "$GITHUB_REPOSITORY" --pattern "web-research-v79.apk" --dir .
+          test -s web-research-v79.apk
+          echo "Downloaded web-research-v79.apk ($(stat -c%s web-research-v79.apk) bytes)"
 
-      - name: Download APK from GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.release.outputs.tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          FILE="web-research-${TAG}.apk"
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$FILE" --dir .
-          test -s "$FILE"
-          echo "Downloaded $FILE ($(stat -c%s "$FILE") bytes)"
-
-      - name: Upload APK to Dropbox /GPT
+      - name: Upload v79 APK to Dropbox /GPT
         env:
           DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
           DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
           DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
-          TAG: ${{ steps.release.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          FILE="web-research-${TAG}.apk"
+          FILE="web-research-v79.apk"
           TOKEN_JSON=$(curl --silent --show-error --fail-with-body https://api.dropboxapi.com/oauth2/token -u "${DROPBOX_APP_KEY}:${DROPBOX_APP_SECRET}" -d grant_type=refresh_token -d "refresh_token=${DROPBOX_REFRESH_TOKEN}")
           ACCESS_TOKEN=$(printf '%s' "$TOKEN_JSON" | jq -r '.access_token // empty')
           if [ -z "$ACCESS_TOKEN" ]; then
@@ -66,5 +38,5 @@ jobs:
           fi
           API_ARG=$(jq -cn --arg path "/GPT/${FILE}" '{path:$path,mode:"overwrite",autorename:false,mute:false,strict_conflict:false}')
           RESPONSE=$(curl --silent --show-error --fail-with-body -X POST https://content.dropboxapi.com/2/files/upload -H "Authorization: Bearer ${ACCESS_TOKEN}" -H "Dropbox-API-Arg: ${API_ARG}" -H "Content-Type: application/octet-stream" --data-binary "@${FILE}")
-          printf '%s' "$RESPONSE" | jq -e '.path_display == ("/GPT/" + $file)' --arg file "$FILE" >/dev/null
-          echo "Uploaded to Dropbox: /GPT/${FILE}"
+          printf '%s' "$RESPONSE" | jq -e '.path_display == "/GPT/web-research-v79.apk"' >/dev/null
+          echo "Uploaded to Dropbox: /GPT/web-research-v79.apk"
