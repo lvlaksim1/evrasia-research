@@ -42,20 +42,28 @@ internal object UniversalAuthAnalyzerV2 {
         collectEventSources(events, items, baseUrl, sources)
 
         var dynamicCount = 0
-        val replacedValues = mutableSetOf<String>()
+        val valueVariables = mutableMapOf<String, String>()
         for (consumerIndex in 0 until items.length()) {
             val item = items.optJSONObject(consumerIndex) ?: continue
             val request = item.optJSONObject("request") ?: continue
             val candidates = requestCandidates(request, baseUrl)
             for (candidate in candidates) {
                 if (!isDynamicCandidate(candidate.key, candidate.value)) continue
-                if (!replacedValues.add(candidate.value)) continue
                 val source = sources.asSequence()
                     .filter { it.itemIndex >= 0 && it.itemIndex < consumerIndex && it.value == candidate.value }
                     .maxByOrNull { it.itemIndex }
                     ?: continue
-                val variableName = uniqueVariable(variableName(candidate.key, source.key), usedNames)
-                usedNames.add(variableName)
+                val variableName = valueVariables[candidate.value] ?: run {
+                    val newName = uniqueVariable(variableName(candidate.key, source.key), usedNames)
+                    usedNames.add(newName)
+                    valueVariables[candidate.value] = newName
+                    ensureVariable(variables, newName, source.key)
+                    items.optJSONObject(source.itemIndex)?.let { producerItem ->
+                        appendTestLines(producerItem, extractorLines(source, newName))
+                    }
+                    dynamicCount++
+                    newName
+                }
                 replaceStrings(request, candidate.value, "{{$variableName}}")
                 val responses = item.optJSONArray("response")
                 if (responses != null) {
@@ -65,11 +73,6 @@ internal object UniversalAuthAnalyzerV2 {
                         }
                     }
                 }
-                ensureVariable(variables, variableName, source.key)
-                items.optJSONObject(source.itemIndex)?.let { producerItem ->
-                    appendTestLines(producerItem, extractorLines(source, variableName))
-                }
-                dynamicCount++
             }
         }
 
@@ -124,14 +127,13 @@ internal object UniversalAuthAnalyzerV2 {
         events.forEach { event ->
             val method = NetworkEventClassifier.methodOf(event).ifBlank { event.optString("method", "GET") }
             val url = event.optString("url", "")
+            val pageContent = event.optString("content", "")
             val itemIndex = findItemIndex(items, method, url, baseUrl).let { direct ->
-                if (direct >= 0) direct else if (event.optString("source", "") == "auth-page-source") findItemIndex(items, "GET", url, baseUrl) else -1
+                if (direct >= 0) direct else if (pageContent.isNotBlank()) findItemIndex(items, "GET", url, baseUrl) else -1
             }
             if (itemIndex < 0) return@forEach
 
-            if (event.optString("source", "") == "auth-page-source") {
-                collectTextSources(event.optString("content", ""), itemIndex, out)
-            }
+            if (pageContent.isNotBlank()) collectTextSources(pageContent, itemIndex, out)
 
             val body = NetworkEventClassifier.responseBodyText(event)
             if (body.isBlank() || body in setOf("[binary]", "[non-text response]", "[unavailable]")) return@forEach
