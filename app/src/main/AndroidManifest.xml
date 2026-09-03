@@ -17,6 +17,15 @@
             android:authorities="${applicationId}.cookieTraceUi"
             android:exported="false"
             android:initOrder="90" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
         <activity android:name=".WebResearchV10Activity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -24,6 +33,6 @@
             </intent-filter>
         </activity>
         <activity android:name=".NetworkResearchActivity" android:exported="false" android:label="Сетевые запросы" />
-        <activity android:name=".NetworkDebuggerActivity" android:exported="false" android:label="Network debugger" />
+        <activity android:name=".NetworkDebuggerActivity" android:exported="false" android:label="Сетевые запросы" />
     </application>
 </manifest>

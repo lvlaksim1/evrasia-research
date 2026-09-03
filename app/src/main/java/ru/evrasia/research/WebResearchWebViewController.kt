@@ -159,6 +159,9 @@ internal class WebResearchWebViewController(
         web.settings.userAgentString = userAgent
         web.settings.useWideViewPort = desktop
         web.settings.loadWithOverviewMode = desktop
+        web.settings.setSupportZoom(desktop)
+        web.settings.builtInZoomControls = desktop
+        web.settings.displayZoomControls = false
         web.setInitialScale(0)
         captureController.updateUserAgent(userAgent)
         record(
@@ -168,6 +171,7 @@ internal class WebResearchWebViewController(
                 .put("mode", if (desktop) "desktop" else "mobile")
                 .put("userAgent", userAgent)
                 .put("desktopViewportWidth", if (desktop) 1280 else JSONObject.NULL)
+                .put("pinchZoom", desktop)
         )
         if (reload && !web.url.isNullOrBlank()) web.reload()
     }
