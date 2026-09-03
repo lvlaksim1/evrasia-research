@@ -265,17 +265,38 @@ internal object UniversalAuthAnalyzer {
             val node = nodes[index]
             if (isNoise(node, origins) || isStatic(node)) continue
             var value = if (origin(node.url) in origins) 5 else -10
-            if (finalUrl.isNotBlank() && normalizeUrl(node.url) == finalUrl) value += 12
-            if (node.source == "navigation") value += 6
-            if (node.method == "GET") value += 2
-            if (node.event.optInt("status", 0) in 200..399) value += 4
+            val status = node.event.optInt("status", 0)
+            val body = responseBody(node.event)
+            val requestBody = node.event.optString("requestBody", "")
+            val apiLike = node.source in setOf("fetch", "xhr", "replay")
+            val nonGet = node.method in setOf("POST", "PUT", "PATCH", "DELETE")
+
+            if (status in 200..399) value += 5
+            if (apiLike) value += 7
+            if (nonGet) value += 8
+            if (requestBody.isNotBlank() && requestBody !in setOf("[FormData]", "[unavailable]")) value += 3
+            if (body.isNotBlank() && body !in setOf("[binary]", "[non-text response]", "[unavailable]")) {
+                value += when {
+                    body.length >= 500 -> 5
+                    body.length >= 100 -> 4
+                    body.length >= 20 -> 3
+                    else -> 1
+                }
+            }
+            if (finalUrl.isNotBlank() && normalizeUrl(node.url) == finalUrl) value += 7
+            if (node.source == "navigation") value += 3
+            if (node.method == "GET") value += 1
             if (requestHeaders(node.event).any { it.first.equals("Authorization", true) && it.second.isNotBlank() }) value += 6
-            if (looksLikeLoginResponse(node.event, node.url)) value -= 12
-            if (authPath(node.url) && normalizeUrl(node.url) != finalUrl) value -= 3
-            if (normalizeUrl(before.url) == normalizeUrl(node.url) && normalizeUrl(before.url) != finalUrl) value -= 2
-            if (value > bestScore) { bestScore = value; best = index }
+            if (looksLikeLoginResponse(node.event, node.url)) value -= 20
+            if (authPath(node.url) && normalizeUrl(node.url) != finalUrl) value -= 5
+            if (normalizeUrl(before.url) == normalizeUrl(node.url) && normalizeUrl(before.url) != finalUrl) value -= 3
+
+            if (value > bestScore || (value == bestScore && best != null && index > best)) {
+                bestScore = value
+                best = index
+            }
         }
-        return if (bestScore >= 6) best else null
+        return if (bestScore >= 8) best else null
     }
 
     private fun collectProducers(nodes: List<Node>, hints: List<Hint>): List<Producer> {
@@ -546,7 +567,20 @@ internal object UniversalAuthAnalyzer {
     private fun requestMaterial(event: JSONObject): String = buildString { append(event.optString("url", "")).append('\n'); requestHeaders(event).forEach { append(it.first).append(':').append(it.second).append('\n') }; append(event.optString("requestBody", "")) }
     private fun containsMaterial(material: String, value: String): Boolean { if (value.isBlank()) return false; if (material.contains(value)) return true; val encoded = try { URLEncoder.encode(value, "UTF-8").replace("+", "%20") } catch (_: Exception) { "" }; return encoded.isNotBlank() && material.contains(encoded, true) }
 
-    private fun requestHeaders(event: JSONObject): List<Pair<String, String>> { val headers = event.optJSONObject("requestHeaders") ?: event.optJSONObject("headers") ?: return emptyList(); val out = mutableListOf<Pair<String, String>>(); val keys = headers.keys(); while (keys.hasNext()) { val key = keys.next(); val value = headers.opt(key); if (value != null && value != JSONObject.NULL) out.add(key to value.toString()) }; return out }
+    private fun requestHeaders(event: JSONObject): List<Pair<String, String>> {
+        val headers = event.optJSONObject("requestHeaders") ?: event.optJSONObject("headers") ?: return emptyList()
+        val out = linkedMapOf<String, Pair<String, String>>()
+        val keys = headers.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value = headers.opt(key)
+            if (value == null || value == JSONObject.NULL) continue
+            val normalized = key.lowercase(Locale.US)
+            val originalName = out[normalized]?.first ?: key
+            out[normalized] = originalName to value.toString()
+        }
+        return out.values.toList()
+    }
     private fun responseHeaders(event: JSONObject): List<Pair<String, String>> { event.optJSONObject("responseHeaders")?.let { headers -> val out = mutableListOf<Pair<String, String>>(); val keys = headers.keys(); while (keys.hasNext()) { val key = keys.next(); val value = headers.opt(key); if (value != null && value != JSONObject.NULL) out.add(key to value.toString()) }; return out }; val raw = event.optString("responseHeadersRaw", ""); if (raw.isBlank()) return emptyList(); return raw.lines().mapNotNull { line -> val split = line.indexOf(':'); if (split <= 0) null else line.substring(0, split).trim() to line.substring(split + 1).trim() } }
     private fun parseUrlEncoded(raw: String): List<Pair<String, String>> { if (raw.isBlank()) return emptyList(); return raw.split('&').filter { it.isNotBlank() }.map { part -> val split = part.indexOf('='); decode(if (split >= 0) part.substring(0, split) else part) to decode(if (split >= 0) part.substring(split + 1) else "") } }
     private fun htmlAttributes(tag: String): Map<String, String> { val out = linkedMapOf<String, String>(); Regex("([A-Za-z_:][-A-Za-z0-9_:.]*)\\s*=\\s*([\\\"'])(.*?)\\2", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(tag).forEach { out[it.groupValues[1].lowercase(Locale.US)] = it.groupValues[3] }; return out }
