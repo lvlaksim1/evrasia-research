@@ -22,7 +22,27 @@ jobs:
       - name: Apply refactor
         shell: bash
         run: |
-          git show d99787d87ad76ba8b3a155ee1737b709f12fc7d1:.github/workflows/result-delivery-refactor.yml | sed -n "/python3 - <<'PY'/,/^          PY$/p" | sed '1d;$d;s/^          //' > /tmp/result-delivery-refactor.py
+          git show d99787d87ad76ba8b3a155ee1737b709f12fc7d1:.github/workflows/result-delivery-refactor.yml > /tmp/original-refactor.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/original-refactor.yml').read_text(encoding='utf-8').splitlines()
+          start = next(i for i, line in enumerate(lines) if "python3 - <<'PY'" in line) + 1
+          end = next(i for i in range(start, len(lines)) if lines[i] == '          PY')
+          output = []
+          inside = False
+          for original in lines[start:end]:
+              line = original
+              if inside:
+                  if line == "          '''":
+                      line = line[10:]
+              elif line.startswith('          '):
+                  line = line[10:]
+              count = line.count("'''")
+              output.append(line)
+              if count % 2 == 1:
+                  inside = not inside
+          Path('/tmp/result-delivery-refactor.py').write_text('\n'.join(output) + '\n', encoding='utf-8')
+          PY
           python3 /tmp/result-delivery-refactor.py
       - name: Verify refactor
         shell: bash
