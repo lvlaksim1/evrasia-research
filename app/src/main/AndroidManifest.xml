@@ -1,6 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- AUTH analyzer UI is initialized through AuthUiProvider. -->
     <application
         android:name=".WebResearchApp"
         android:theme="@style/AppTheme"
