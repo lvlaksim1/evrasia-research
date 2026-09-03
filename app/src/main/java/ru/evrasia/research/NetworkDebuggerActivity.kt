@@ -1,6 +1,7 @@
 package ru.evrasia.research
 
 import android.app.AlertDialog
+import android.app.Dialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -710,8 +711,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
                 append("  ").append(methodOf(e))
                 if(e.optInt("status",0)>0)append("  ").append(e.optInt("status"))
                 if(e.has("duration"))append("  ").append(formatDuration(e.optDouble("duration",0.0)))
-                append("
-").append(e.optString("url",""))
+                append("\n").append(e.optString("url",""))
             }
             body.addView(Button(this).apply{
                 text=label;isAllCaps=false;gravity=Gravity.START or Gravity.CENTER_VERTICAL;setTextColor(textColor);textSize=10f;typeface=Typeface.MONOSPACE;minHeight=0;minimumHeight=0;setPadding(dp(10),dp(7),dp(10),dp(7));background=rounded(panel2,9f,line);setOnClickListener{dialog.dismiss();showDetails(e,search.text.toString().trim())}
@@ -735,11 +735,8 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             val source=e.optString("source","")
             val direction=when{source.endsWith("-send")->"SEND";source.endsWith("-receive")||source.endsWith("-message")->"RECEIVE";source.endsWith("-open")->"OPEN";else->source.uppercase(Locale.US)}
             val data=e.optString("data",e.optString("message",e.optString("state","")))
-            val displayLine="${if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"}  $direction${if(data.isNotBlank())"
-$data" else ""}"
-            copyText.append(displayLine).append("
-
-")
+            val displayLine="${if(e.has("time"))listTime(e.optLong("time")) else "--:--:--.---"}  $direction${if(data.isNotBlank())"\n$data" else ""}"
+            copyText.append(displayLine).append("\n\n")
             body.addView(TextView(this).apply{text=displayLine;setTextColor(if(direction=="SEND")amber else if(direction=="RECEIVE")accent else muted);textSize=10.5f;typeface=Typeface.MONOSPACE;setTextIsSelectable(true);setPadding(dp(9),dp(8),dp(9),dp(8));background=rounded(panel2,9f,line)},LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(3),0,dp(3))})
         }
         root.addView(ScrollView(this).apply{addView(body)},LinearLayout.LayoutParams(-1,0,1f))

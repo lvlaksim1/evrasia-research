@@ -655,10 +655,7 @@ class WebResearchV10Activity : AppCompatActivity() {
         val version = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "dev" } catch (_: Exception) { "dev" }
         showBottomSheet("web research") { _ ->
             addView(TextView(this@WebResearchV10Activity).apply {
-                text = "Версия приложения: $version
-Релиз: $version
-
-Мобильный браузер для исследования сетевого взаимодействия сайтов."
+                text = "Версия приложения: $version\nРелиз: $version\n\nМобильный браузер для исследования сетевого взаимодействия сайтов."
                 setTextColor(palette.text)
                 textSize = 14f
                 setPadding(dp(14), dp(6), dp(14), dp(18))
