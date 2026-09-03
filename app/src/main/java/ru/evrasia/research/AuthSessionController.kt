@@ -17,6 +17,7 @@ internal class AuthSessionController(
     private var startRevision = -1L
     private var startTime = 0L
     private var beforeState: AuthFlowAnalyzer.BrowserState? = null
+    private var beforeDocument = ""
     private var previousRecording = true
     private val handler = Handler(Looper.getMainLooper())
     private val hookRefresh = object : Runnable {
@@ -40,15 +41,18 @@ internal class AuthSessionController(
         startRevision = NetworkDebugStore.revision()
         startTime = System.currentTimeMillis()
         captureState { state ->
-            beforeState = state
-            active = true
-            handler.removeCallbacks(hookRefresh)
-            handler.post(hookRefresh)
-            Toast.makeText(
-                activity,
-                "AUTH-анализ запущен. Выполните вход на сайте и снова нажмите AUTH.",
-                Toast.LENGTH_LONG
-            ).show()
+            captureDocument { html ->
+                beforeState = state
+                beforeDocument = html
+                active = true
+                handler.removeCallbacks(hookRefresh)
+                handler.post(hookRefresh)
+                Toast.makeText(
+                    activity,
+                    "AUTH-анализ запущен. Выполните вход на сайте и снова нажмите AUTH.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 
@@ -58,8 +62,10 @@ internal class AuthSessionController(
         disableAuthHooks()
         captureState { after ->
             val before = beforeState
+            val initialDocument = beforeDocument
             active = false
             beforeState = null
+            beforeDocument = ""
             val delta = NetworkDebugStore.delta(startRevision)
             restoreRecording()
             if (before == null) {
@@ -71,7 +77,13 @@ internal class AuthSessionController(
                 time <= 0L || time >= startTime - 1500L
             }
             try {
-                val result = UniversalAuthAnalyzer.analyze(events, before, after)
+                val baseResult = UniversalAuthAnalyzer.analyze(events, before, after)
+                val result = AuthDynamicPostProcessor.enhance(
+                    baseResult,
+                    initialDocument,
+                    before.url,
+                    after.url
+                )
                 Toast.makeText(
                     activity,
                     "AUTH: ${result.confidence} · ${result.requestCount} запросов",
@@ -98,6 +110,7 @@ internal class AuthSessionController(
         disableAuthHooks()
         active = false
         beforeState = null
+        beforeDocument = ""
         restoreRecording()
     }
 
@@ -136,6 +149,23 @@ internal class AuthSessionController(
                     sessionStorage = objectValue.optJSONObject("sessionStorage") ?: JSONObject()
                 )
                 onReady(state)
+            }
+        }
+    }
+
+    private fun captureDocument(onReady: (String) -> Unit) {
+        val script = """
+            (function(){
+              try{
+                return JSON.stringify({html:document.documentElement ? document.documentElement.outerHTML : ''});
+              }catch(e){
+                return JSON.stringify({html:''});
+              }
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(script) { raw ->
+            activity.runOnUiThread {
+                onReady(decodeJavascriptJson(raw).optString("html", ""))
             }
         }
     }
