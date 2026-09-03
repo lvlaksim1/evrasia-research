@@ -82,10 +82,24 @@ internal object NetworkEventCorrelator {
             if (key in setOf("source", "url", "time", "method", "capturedSources", "_fieldSources", "_storeId", "_storeRevision")) continue
             val value = incoming.opt(key)
             if (value != null && value != JSONObject.NULL) {
-                target.put(key, value)
+                val current = target.opt(key)
+                if (key in setOf("requestHeaders", "headers", "responseHeaders") && current is JSONObject && value is JSONObject) {
+                    mergeObjects(current, value)
+                } else {
+                    target.put(key, value)
+                }
                 val fieldSource = incomingFields?.optString(key, "").orEmpty().ifBlank { source }
                 if (fieldSource.isNotBlank()) targetFields.put(key, fieldSource)
             }
+        }
+    }
+
+    private fun mergeObjects(target: JSONObject, incoming: JSONObject) {
+        val keys = incoming.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value = incoming.opt(key)
+            if (value != null && value != JSONObject.NULL) target.put(key, value)
         }
     }
 
