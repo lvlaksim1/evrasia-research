@@ -71,7 +71,7 @@ internal class AuthSessionController(
                 time <= 0L || time >= startTime - 1500L
             }
             try {
-                val result = AuthFlowAnalyzer.analyze(events, before, after)
+                val result = UniversalAuthAnalyzer.analyze(events, before, after)
                 Toast.makeText(
                     activity,
                     "AUTH: ${result.confidence} · ${result.requestCount} запросов",
