@@ -210,7 +210,7 @@ internal object UniversalAuthAnalyzer {
         if (event.optString("source", "") in setOf("fetch", "xhr", "replay")) score += 5
         score += sharedKinds.size * 6 + minOf(sharedNames.size, 5) * 2
         if (sharedValues) score += 4
-        score += when (abs(event.optLong("time", 0L) - hint.time)) { in 0..1000 -> 4; in 1001..3000 -> 3; in 3001..8000 -> 1; else -> 0 }
+        score += when (abs(event.optLong("time", 0L) - hint.time)) { in 0L..1000L -> 4; in 1001L..3000L -> 3; in 3001L..8000L -> 1; else -> 0 }
         if (hasResponse(event)) score += 2
         return score
     }
@@ -364,7 +364,7 @@ internal object UniversalAuthAnalyzer {
 
     private fun credentialValues(event: JSONObject): Map<String, String> {
         val out = linkedMapOf<String, String>()
-        fields(event).forEach { (key, value) -> credentialKind(key)?.let { if (value.isNotBlank()) out[value] = if (it == "csrf") "csrf_token" else it } }
+        fields(event).forEach { (key, value) -> credentialKind(key)?.let { kind -> if (value.isNotBlank()) out[value] = if (kind == "csrf") "csrf_token" else kind } }
         return out
     }
 
@@ -374,9 +374,10 @@ internal object UniversalAuthAnalyzer {
             isPasswordField(value) -> "password"
             isLoginField(value) -> "login"
             isOtpField(value) -> "otp"
-            isCsrfField(value) -> "csrf"
+            value == "state" -> "oauth_state"
             value.contains("code_verifier") -> "code_verifier"
             value.contains("code_challenge") -> "code_challenge"
+            isCsrfField(value) -> "csrf"
             else -> null
         }
     }
@@ -552,7 +553,7 @@ internal object UniversalAuthAnalyzer {
     private fun scalar(value: Any?): String = when (value) { null, JSONObject.NULL -> ""; is JSONObject, is JSONArray -> value.toString(); else -> value.toString() }
     private fun canonicalVariable(key: String): String { val value = normalizeField(key); return when { value.contains("refresh") && value.contains("token") -> "refresh_token"; value.contains("access") && value.contains("token") -> "access_token"; value.contains("id_token") || value == "idtoken" -> "id_token"; value.contains("csrf") || value.contains("xsrf") || value == "sessid" -> "csrf_token"; value.contains("session") && value.contains("token") -> "session_token"; value in setOf("jwt", "authorization", "token") -> "access_token"; value == "state" -> "oauth_state"; value == "code" -> "authorization_code"; value.contains("nonce") -> "nonce"; value.isNotBlank() -> value.take(48); else -> "auth_value" } }
     private fun uniqueVariable(base: String, used: Set<String>): String { if (base !in used) return base; var index = 2; while ("${base}_$index" in used) index++; return "${base}_$index" }
-    private fun credentialDescription(name: String): String = when (name) { "login" -> "Login / username / email / phone detected in the authentication request"; "password" -> "Password detected in the authentication request; intentionally left empty"; "otp" -> "One-time code detected in the authentication flow"; "csrf_token" -> "Anti-CSRF value detected in the authentication flow"; else -> "AUTH variable" }
+    private fun credentialDescription(name: String): String = when (name) { "login" -> "Login / username / email / phone detected in the authentication request"; "password" -> "Password detected in the authentication request; intentionally left empty"; "otp" -> "One-time code detected in the authentication flow"; "csrf_token" -> "Anti-CSRF value detected in the authentication flow"; "oauth_state" -> "OAuth/OIDC state value"; "code_verifier" -> "OAuth PKCE code_verifier"; "code_challenge" -> "OAuth PKCE code_challenge"; else -> "AUTH variable" }
     private fun tokenLike(value: String): Boolean { if (value.length < 16 || value.length > 4096 || value.contains(' ')) return false; if (value.count { it == '.' } == 2 && value.all { it.isLetterOrDigit() || it in "-_." }) return true; return value.length >= 24 && value.toSet().size >= 10 && value.all { it.isLetterOrDigit() || it in "-_=.~" } }
     private fun reusable(value: String): Boolean = value.length in 4..4096 && value.lowercase(Locale.US) !in setOf("true", "false", "null", "undefined", "success", "error")
     private fun portableUrl(raw: String, base: String, replacements: Map<String, String>): String { var value = replace(raw, replacements); if (base.isNotBlank() && raw.startsWith(base)) value = "{{base_url}}" + value.substring(base.length); return value }
