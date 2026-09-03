@@ -1,0 +1,10 @@
+[
+    {
+        "merged": "ru.evrasia.research.app-debug-25:/drawable_ic_web_research.xml.flat",
+        "source": "ru.evrasia.research.app-main-27:/drawable/ic_web_research.xml"
+    },
+    {
+        "merged": "ru.evrasia.research.app-debug-25:/xml_file_paths.xml.flat",
+        "source": "ru.evrasia.research.app-main-27:/xml/file_paths.xml"
+    }
+]

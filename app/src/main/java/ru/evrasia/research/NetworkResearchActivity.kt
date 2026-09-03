@@ -402,7 +402,7 @@ class NetworkResearchActivity : AppCompatActivity() {
             val cookies = if (url.startsWith("http")) CookieManager.getInstance().getCookie(url).orEmpty() else ""
             copy("POSTMAN JSON", PostmanRequestExporter.build(event, method, cookies))
         }, LinearLayout.LayoutParams(0, dp(46), 1f))
-        actions.addView(secondaryButton("Копировать URL") { copy("URL", url) }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(7) })
+        actions.addView(secondaryButton("URL") { copy("URL", url) }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(7) })
         root.addView(actions)
 
         dialog.setContentView(root)
@@ -453,29 +453,19 @@ class NetworkResearchActivity : AppCompatActivity() {
     private fun beginExport() {
         NetworkRequestActions.prepareFullExport(this)
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        pendingExport = true
-        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/zip"
-            putExtra(Intent.EXTRA_TITLE, "web-research-$stamp.zip")
-        }, 801)
+        ResultDelivery.deliverGeneratedFile(this, "Экспорт ZIP", "web-research-$stamp.zip", "application/zip") { output ->
+            if (!NetworkRequestActions.writeFullExport(this, output)) throw IllegalStateException("export failed")
+        }
     }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != 801 || resultCode != RESULT_OK || !pendingExport) return
-        pendingExport = false
-        data?.data?.let { uri ->
-            contentResolver.openOutputStream(uri)?.use { output -> NetworkRequestActions.writeFullExport(this, output) }
-        }
-        Toast.makeText(this, "ZIP экспортирован", Toast.LENGTH_SHORT).show()
+        ResultDelivery.handleActivityResult(this, requestCode, resultCode, data)
     }
 
     private fun copy(label: String, value: String) {
-        val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        manager.setPrimaryClip(ClipData.newPlainText(label, value))
-        Toast.makeText(this, "$label скопирован", Toast.LENGTH_SHORT).show()
+        ResultDelivery.deliverText(this, label, value)
     }
 
     private fun pathOf(url: String): String = try {

@@ -1,6 +1,5 @@
 package ru.evrasia.research
 
-import android.app.Activity
 import android.content.Intent
 import android.webkit.WebView
 import androidx.appcompat.app.AppCompatActivity
@@ -17,25 +16,11 @@ internal class WebResearchExportController(
     fun start() {
         captureSnapshot()
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/zip"
-            putExtra(Intent.EXTRA_TITLE, "web-research-$stamp.zip")
+        ResultDelivery.deliverGeneratedFile(activity, "Экспорт ZIP", "web-research-$stamp.zip", "application/zip") { output ->
+            archive.writeZip(output, web.url ?: "")
         }
-        activity.startActivityForResult(intent, REQUEST_EXPORT_ZIP)
     }
 
-    fun handleResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
-        if (requestCode != REQUEST_EXPORT_ZIP) return false
-        if (resultCode == Activity.RESULT_OK) {
-            data?.data?.let { uri ->
-                activity.contentResolver.openOutputStream(uri)?.use { archive.writeZip(it, web.url ?: "") }
-            }
-        }
-        return true
-    }
-
-    companion object {
-        private const val REQUEST_EXPORT_ZIP = 501
-    }
+    fun handleResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean =
+        ResultDelivery.handleActivityResult(activity, requestCode, resultCode, data)
 }

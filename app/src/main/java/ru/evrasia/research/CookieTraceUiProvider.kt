@@ -362,11 +362,11 @@ class CookieTraceUiProvider : ContentProvider(), Application.ActivityLifecycleCa
                             val ok = NetworkRequestActions.replay(activity, original, regen.optString("method", "GET"), url, headers, regen.optString("requestBody", ""))
                             Toast.makeText(activity, if (ok) "Запрос отправляется" else "Не удалось повторить запрос", Toast.LENGTH_SHORT).show()
                         })
-                        root.addView(actionButton(activity, "КОПИРОВАТЬ cURL") { copyText(activity, "cURL", curlFor(regen)) })
+                        root.addView(actionButton(activity, "cURL") { copyText(activity, "cURL", curlFor(regen)) })
                     }
                 }
                 "JAVASCRIPT" -> {
-                    if (regen.optString("raw", "").isNotBlank()) root.addView(actionButton(activity, "КОПИРОВАТЬ JS SETTER") { copyText(activity, "JS setter", jsSetter(regen)) })
+                    if (regen.optString("raw", "").isNotBlank()) root.addView(actionButton(activity, "JS SETTER") { copyText(activity, "JS setter", jsSetter(regen)) })
                 }
             }
         }
@@ -485,9 +485,7 @@ class CookieTraceUiProvider : ContentProvider(), Application.ActivityLifecycleCa
     private fun shellQuote(value: String) = "'" + value.replace("'", "'\"'\"'") + "'"
 
     private fun copyText(activity: Activity, label: String, value: String) {
-        val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText(label, value))
-        Toast.makeText(activity, "$label скопирован", Toast.LENGTH_SHORT).show()
+        ResultDelivery.deliverText(activity, label, value)
     }
 
     private fun block(activity: Activity, textValue: String, strong: Boolean): TextView = TextView(activity).apply {

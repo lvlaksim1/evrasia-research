@@ -740,7 +740,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
             body.addView(TextView(this).apply{text=displayLine;setTextColor(if(direction=="SEND")amber else if(direction=="RECEIVE")accent else muted);textSize=10.5f;typeface=Typeface.MONOSPACE;setTextIsSelectable(true);setPadding(dp(9),dp(8),dp(9),dp(8));background=rounded(panel2,9f,line)},LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(3),0,dp(3))})
         }
         root.addView(ScrollView(this).apply{addView(body)},LinearLayout.LayoutParams(-1,0,1f))
-        root.addView(compactButton("Копировать"){copyText("REALTIME",copyText.toString().trim())},LinearLayout.LayoutParams(-1,dp(42)).apply{setMargins(0,dp(5),0,0)})
+        root.addView(compactButton("REALTIME"){copyText("REALTIME",copyText.toString().trim())},LinearLayout.LayoutParams(-1,dp(42)).apply{setMargins(0,dp(5),0,0)})
         showToolDialog(dialog,root,.96f,.88f)
     }
 
@@ -1126,8 +1126,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     }
 
     private fun copyText(label:String,value:String){
-        val manager=getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        manager.setPrimaryClip(ClipData.newPlainText(label,value));Toast.makeText(this,"$label скопирован",Toast.LENGTH_SHORT).show()
+        ResultDelivery.deliverText(this,label,value)
     }
 
     private fun shellQuote(value:String)="'"+value.replace("'","'\"'\"'")+"'"
@@ -1198,8 +1197,8 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     }
 
     private fun beginBinarySave(event:JSONObject,bytes:ByteArray,mime:String){
-        pendingBinary=bytes;pendingBinaryMime=mime.ifBlank{"application/octet-stream"};pendingBinaryName=suggestFileName(event,pendingBinaryMime)
-        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply{addCategory(Intent.CATEGORY_OPENABLE);type=pendingBinaryMime;putExtra(Intent.EXTRA_TITLE,pendingBinaryName)},702)
+        val safeMime=mime.ifBlank{"application/octet-stream"}
+        ResultDelivery.deliverBytes(this,"Ответ",bytes,suggestFileName(event,safeMime),safeMime)
     }
 
     private fun suggestFileName(event:JSONObject,mime:String):String{
@@ -1217,12 +1216,14 @@ class NetworkDebuggerActivity : AppCompatActivity() {
     private fun exportZip(){
         NetworkRequestActions.prepareFullExport(this)
         val stamp=SimpleDateFormat("yyyyMMdd-HHmmss",Locale.US).format(Date())
-        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply{addCategory(Intent.CATEGORY_OPENABLE);type="application/zip";putExtra(Intent.EXTRA_TITLE,"web-research-$stamp.zip")},701)
+        ResultDelivery.deliverGeneratedFile(this,"Экспорт ZIP","web-research-$stamp.zip","application/zip"){out->
+            if(!NetworkRequestActions.writeFullExport(this,out))writeTraceFallback(out)
+        }
     }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?){
-        super.onActivityResult(requestCode,resultCode,data);if(resultCode!=RESULT_OK)return
+        super.onActivityResult(requestCode,resultCode,data);if(ResultDelivery.handleActivityResult(this,requestCode,resultCode,data))return;if(resultCode!=RESULT_OK)return
         if(requestCode==701){
             data?.data?.let{uri->contentResolver.openOutputStream(uri)?.use{out->if(!NetworkRequestActions.writeFullExport(this,out))writeTraceFallback(out)}}
             Toast.makeText(this,"Полный ZIP экспортирован",Toast.LENGTH_SHORT).show()
