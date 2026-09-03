@@ -75,7 +75,9 @@ internal class AuthSessionController(
                 time <= 0L || time >= startTime - 1500L
             }
             try {
-                val result = UniversalAuthAnalyzerV2.analyze(events, before, after, beforeAuthSource)
+                val initialAuthSource = beforeAuthSource
+                val result = UniversalAuthAnalyzerV2.analyze(events, before, after, initialAuthSource)
+                val environment = PostmanEnvironmentSnapshot.build(result.collectionJson, events, initialAuthSource)
                 beforeAuthSource = ""
                 Toast.makeText(
                     activity,
@@ -85,7 +87,8 @@ internal class AuthSessionController(
                 PostmanDelivery.deliver(
                     activity,
                     result.collectionJson,
-                    result.loginUrl.ifBlank { after.url.ifBlank { before.url } }
+                    result.loginUrl.ifBlank { after.url.ifBlank { before.url } },
+                    environment
                 )
             } catch (error: Exception) {
                 beforeAuthSource = ""
@@ -213,8 +216,7 @@ internal class AuthSessionController(
               const safeField=e=>{
                 const type=String(e.type||'').toLowerCase();
                 let value='';
-                if(type==='password')value='[password]';
-                else if(type==='checkbox'||type==='radio'){if(!e.checked)return null;value=String(e.value||'on')}
+                if(type==='checkbox'||type==='radio'){if(!e.checked)return null;value=String(e.value||'on')}
                 else if(type==='file')value='[file]';
                 else value=String(e.value==null?'':e.value);
                 return {name:String(e.name||''),type:type,value:value};
