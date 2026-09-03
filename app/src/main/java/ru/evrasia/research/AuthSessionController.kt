@@ -77,7 +77,11 @@ internal class AuthSessionController(
             try {
                 val initialAuthSource = beforeAuthSource
                 val result = UniversalAuthAnalyzerV2.analyze(events, before, after, initialAuthSource)
-                val environment = PostmanEnvironmentSnapshot.build(result.collectionJson, events, initialAuthSource)
+                val environment = try {
+                    PostmanEnvironmentSnapshotSafe.build(result.collectionJson, events, initialAuthSource)
+                } catch (_: Exception) {
+                    ""
+                }
                 beforeAuthSource = ""
                 Toast.makeText(
                     activity,
