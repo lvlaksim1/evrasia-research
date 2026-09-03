@@ -42,12 +42,14 @@ internal object UniversalAuthAnalyzerV2 {
         collectEventSources(events, items, baseUrl, sources)
 
         var dynamicCount = 0
+        val replacedValues = mutableSetOf<String>()
         for (consumerIndex in 0 until items.length()) {
             val item = items.optJSONObject(consumerIndex) ?: continue
             val request = item.optJSONObject("request") ?: continue
-            val candidates = requestCandidates(request)
+            val candidates = requestCandidates(request, baseUrl)
             for (candidate in candidates) {
                 if (!isDynamicCandidate(candidate.key, candidate.value)) continue
+                if (!replacedValues.add(candidate.value)) continue
                 val source = sources.asSequence()
                     .filter { it.itemIndex >= 0 && it.itemIndex < consumerIndex && it.value == candidate.value }
                     .maxByOrNull { it.itemIndex }
@@ -120,12 +122,19 @@ internal object UniversalAuthAnalyzerV2 {
         out: MutableList<Source>
     ) {
         events.forEach { event ->
-            val body = NetworkEventClassifier.responseBodyText(event)
-            if (body.isBlank() || body in setOf("[binary]", "[non-text response]", "[unavailable]")) return@forEach
             val method = NetworkEventClassifier.methodOf(event).ifBlank { event.optString("method", "GET") }
             val url = event.optString("url", "")
-            val itemIndex = findItemIndex(items, method, url, baseUrl)
+            val itemIndex = findItemIndex(items, method, url, baseUrl).let { direct ->
+                if (direct >= 0) direct else if (event.optString("source", "") == "auth-page-source") findItemIndex(items, "GET", url, baseUrl) else -1
+            }
             if (itemIndex < 0) return@forEach
+
+            if (event.optString("source", "") == "auth-page-source") {
+                collectTextSources(event.optString("content", ""), itemIndex, out)
+            }
+
+            val body = NetworkEventClassifier.responseBodyText(event)
+            if (body.isBlank() || body in setOf("[binary]", "[non-text response]", "[unavailable]")) return@forEach
             collectTextSources(body, itemIndex, out)
         }
     }
@@ -143,7 +152,7 @@ internal object UniversalAuthAnalyzerV2 {
                 if (raw.isBlank()) continue
                 collectTextSources(raw, itemIndex, out)
                 if (interestingKey(storageKey) && reusable(raw)) {
-                    out.add(Source(itemIndex, storageKey, raw, "storage"))
+                    addSource(out, Source(itemIndex, storageKey, raw, "storage"))
                 }
             }
         }
@@ -158,7 +167,7 @@ internal object UniversalAuthAnalyzerV2 {
             addSource(out, Source(itemIndex, match.groupValues[1], htmlDecode(match.groupValues[2]), "text-key"))
         }
 
-        val assignment = Regex("\\b([A-Za-z_$][A-Za-z0-9_$.-]{1,79})\\s*=\\s*[\\\"']([^\\\"']{4,4096})[\\\"']")
+        val assignment = Regex("\\b([A-Za-z_\\x24][A-Za-z0-9_\\x24.-]{1,79})\\s*=\\s*[\\\"']([^\\\"']{4,4096})[\\\"']")
         assignment.findAll(bounded).take(250).forEach { match ->
             addSource(out, Source(itemIndex, match.groupValues[1], htmlDecode(match.groupValues[2]), "text-key"))
         }
@@ -184,7 +193,7 @@ internal object UniversalAuthAnalyzerV2 {
         if (out.none { it.itemIndex == source.itemIndex && it.key == source.key && it.value == source.value }) out.add(source)
     }
 
-    private fun requestCandidates(request: JSONObject): List<Candidate> {
+    private fun requestCandidates(request: JSONObject, baseUrl: String): List<Candidate> {
         val out = mutableListOf<Candidate>()
         val headers = request.optJSONArray("header")
         if (headers != null) {
@@ -201,15 +210,13 @@ internal object UniversalAuthAnalyzerV2 {
             }
         }
 
-        val rawUrl = request.opt("url")?.toString().orEmpty()
-        if (!rawUrl.contains("{{")) {
-            try {
-                val url = URL(rawUrl)
-                parseUrlEncoded(url.query.orEmpty()).forEach { (key, value) ->
-                    if (interestingKey(key) || tokenLike(value)) out.add(Candidate(key, value))
-                }
-            } catch (_: Exception) {}
-        }
+        val rawUrl = request.opt("url")?.toString().orEmpty().replace("{{base_url}}", baseUrl)
+        try {
+            val url = URL(rawUrl)
+            parseUrlEncoded(url.query.orEmpty()).forEach { (key, value) ->
+                if (!value.contains("{{") && (interestingKey(key) || tokenLike(value))) out.add(Candidate(key, value))
+            }
+        } catch (_: Exception) {}
 
         val body = request.optJSONObject("body")
         if (body != null) {
@@ -267,10 +274,9 @@ internal object UniversalAuthAnalyzerV2 {
     }
 
     private fun extractorLines(source: Source, variable: String): List<String> {
-        val key = source.key
-        val escaped = jsRegexEscape(key)
+        val escaped = jsRegexEscape(source.key)
         val variableQuoted = JSONObject.quote(variable)
-        val keyQuoted = JSONObject.quote(key)
+        val keyQuoted = JSONObject.quote(source.key)
         return listOf(
             "try {",
             "  const text = pm.response.text();",
@@ -311,35 +317,36 @@ internal object UniversalAuthAnalyzerV2 {
         "});",
         "pm.test(\"AUTH verify: response is not an authentication form\", function () {",
         "  const text = pm.response.text();",
-        "  const htmlLike = /<(?:html|form|input)\\b/i.test(text);",
         "  const passwordField = /<input\\b[^>]*type\\s*=\\s*[\\\"']?password\\b/i.test(text);",
-        "  const authForm = /<form\\b[^>]*(?:login|signin|sign-in|auth)/i.test(text);",
+        "  const authForm = /<form\\b[^>]*(?:action|id|class|name)\\s*=\\s*[\\\"'][^\\\"']*(?:login|signin|sign-in|auth)/i.test(text);",
+        "  const loginField = /name\\s*=\\s*[\\\"'](?:username|login|email|phone|user_login|user_password)[\\\"']/i.test(text);",
         "  const authJson = /[\\\"'](?:error|status|code)[\\\"']\\s*:\\s*[\\\"'](?:unauthorized|forbidden|login_required|invalid_token|not_authenticated)[\\\"']/i.test(text);",
-        "  pm.expect(authJson || (htmlLike && passwordField && authForm), \"Response still looks unauthenticated\").to.eql(false);",
+        "  pm.expect(authJson || (passwordField && (authForm || loginField)), \"Response still looks unauthenticated\").to.eql(false);",
         "});"
     )
 
     private fun appendTestLines(item: JSONObject, lines: List<String>) {
         if (lines.isEmpty()) return
         val events = item.optJSONArray("event") ?: JSONArray().also { item.put("event", it) }
-        var testEvent: JSONObject? = null
+        var foundEvent: JSONObject? = null
         for (i in 0 until events.length()) {
             val event = events.optJSONObject(i) ?: continue
             if (event.optString("listen", "") == "test") {
-                testEvent = event
+                foundEvent = event
                 break
             }
         }
-        if (testEvent == null) {
-            testEvent = JSONObject()
+        if (foundEvent == null) {
+            foundEvent = JSONObject()
                 .put("listen", "test")
                 .put("script", JSONObject().put("type", "text/javascript").put("exec", JSONArray()))
-            events.put(testEvent)
+            events.put(foundEvent)
         }
-        val script = testEvent.optJSONObject("script") ?: JSONObject().also { testEvent.put("script", it) }
+        val targetEvent = foundEvent ?: return
+        val script = targetEvent.optJSONObject("script") ?: JSONObject().also { targetEvent.put("script", it) }
         script.put("type", "text/javascript")
         val exec = script.optJSONArray("exec") ?: JSONArray().also { script.put("exec", it) }
-        lines.forEach(exec::put)
+        lines.forEach { exec.put(it) }
     }
 
     private fun replaceStrings(value: Any?, old: String, replacement: String) {
@@ -478,7 +485,7 @@ internal object UniversalAuthAnalyzerV2 {
         .replace("&gt;", ">")
 
     private fun jsRegexEscape(value: String): String {
-        val specials = "\\.^$|?*+()[]{}"
+        val specials = charArrayOf('\\', '.', '^', '$', '|', '?', '*', '+', '(', ')', '[', ']', '{', '}')
         return buildString {
             value.forEach { char ->
                 if (char in specials) append('\\')
