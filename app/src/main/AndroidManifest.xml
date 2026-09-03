@@ -18,6 +18,11 @@
             android:exported="false"
             android:initOrder="90" />
         <provider
+            android:name=".AuthUiProvider"
+            android:authorities="${applicationId}.authUi"
+            android:exported="false"
+            android:initOrder="80" />
+        <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"
             android:exported="false"
