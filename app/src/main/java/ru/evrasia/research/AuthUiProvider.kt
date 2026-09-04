@@ -70,9 +70,11 @@ internal class AuthUiProvider : ContentProvider(), Application.ActivityLifecycle
             minimumHeight = 0
             setPadding(dp(browser, 4), 0, dp(browser, 4), 0)
             setOnClickListener {
+                val finishing = controller.isActive()
                 controller.toggle()
                 render(browser, this, controller)
-                handler.postDelayed({ if (!browser.isFinishing) render(browser, this, controller) }, 250L)
+                if (finishing) refreshUntilSettled(browser, this, controller)
+                else handler.postDelayed({ if (!browser.isFinishing) render(browser, this, controller) }, 250L)
             }
         }
         render(browser, button, controller)
@@ -85,17 +87,35 @@ internal class AuthUiProvider : ContentProvider(), Application.ActivityLifecycle
         toolbar.addView(button, networkIndex, params)
     }
 
+    private fun refreshUntilSettled(activity: WebResearchV10Activity, button: Button, controller: AuthSessionController) {
+        handler.postDelayed({
+            if (activity.isFinishing || activity.isDestroyed) return@postDelayed
+            render(activity, button, controller)
+            if (controller.isActive() || controller.isProcessing()) refreshUntilSettled(activity, button, controller)
+        }, 250L)
+    }
+
     private fun render(activity: WebResearchV10Activity, button: Button, controller: AuthSessionController) {
         val palette = WebUiTheme.palette(activity)
         val active = controller.isActive()
-        button.text = if (active) "AUTH●" else "AUTH"
-        button.contentDescription = if (active) "Завершить анализ авторизации" else "Начать анализ авторизации"
-        button.setTextColor(if (active) WebUiTheme.contrastText(palette.accent) else palette.accent)
+        val processing = controller.isProcessing()
+        val highlighted = active || processing
+        button.text = when {
+            processing -> "AUTH…"
+            active -> "AUTH●"
+            else -> "AUTH"
+        }
+        button.contentDescription = when {
+            processing -> "Обработка результатов авторизации"
+            active -> "Завершить анализ авторизации"
+            else -> "Начать анализ авторизации"
+        }
+        button.setTextColor(if (highlighted) WebUiTheme.contrastText(palette.accent) else palette.accent)
         button.background = rounded(
             activity,
-            if (active) palette.accent else palette.card,
+            if (highlighted) palette.accent else palette.card,
             13f,
-            if (active) palette.accent else palette.divider
+            if (highlighted) palette.accent else palette.divider
         )
     }
 
