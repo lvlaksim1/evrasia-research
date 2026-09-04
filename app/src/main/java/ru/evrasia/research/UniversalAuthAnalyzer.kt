@@ -64,7 +64,21 @@ internal object UniversalAuthAnalyzer {
             bindings.removeAll { binding ->
                 binding.consumer > stableEndIndex || binding.producer.index > stableEndIndex
             }
+            causalEdges.removeAll { edge ->
+                edge.consumer > stableEndIndex || edge.producer > stableEndIndex
+            }
         }
+
+        val selectedBeforeProvenance = selected.size
+        val proven = provenComponent(loginIndex, bindings, causalEdges)
+        selected.retainAll(proven)
+        bindings.removeAll { binding ->
+            binding.consumer !in selected || (binding.producer.index >= 0 && binding.producer.index !in selected)
+        }
+        causalEdges.removeAll { edge ->
+            edge.producer !in selected || edge.consumer !in selected
+        }
+        val prunedUnproven = selectedBeforeProvenance - selected.size
 
         val verifyIndex: Int? = null
 
@@ -91,7 +105,7 @@ internal object UniversalAuthAnalyzer {
         addAuthHeaderVariables(nodes, selected, replacements, variables, usedVariables, unresolvedVariables)
         addUsedStorageVariables(nodes, selected, before, after, replacements, variables, usedVariables, unresolvedVariables)
 
-        val chosen = dedupe(nodes, selected)
+        val chosen = selected.sorted()
         val selectedOrigins = chosen.map { origin(nodes[it].url) }.filter { it.isNotBlank() }.toSet()
         val baseOrigin = if (selectedOrigins.size == 1) selectedOrigins.first() else ""
         if (baseOrigin.isNotBlank()) variables["base_url"] = VariableDef("base_url", baseOrigin, "Primary origin detected for this AUTH flow")
@@ -99,8 +113,14 @@ internal object UniversalAuthAnalyzer {
         val items = JSONArray()
         var sequence = 1
         val seed = needsSeed(before, nodes, chosen, hints)
+        val firstChosenStep = if (seed) 2 else 1
+        val stepNumbers = chosen.withIndex().associate { entry -> entry.value to entry.index + firstChosenStep }
         if (seed) {
-            val request = JSONObject().put("method", "GET").put("header", JSONArray()).put("url", portableUrl(before.url, baseOrigin, replacements)).put("description", "Open the captured authentication page and establish browser cookies / page state.")
+            val request = JSONObject()
+                .put("method", "GET")
+                .put("header", JSONArray())
+                .put("url", portableUrl(before.url, baseOrigin, replacements))
+                .put("description", "AUTH provenance:\n- Seed: captured initial browser page used to establish cookies / page state before the proven causal AUTH component.")
             val item = JSONObject().put("name", "%02d Prepare authentication page".format(Locale.US, sequence++)).put("request", request)
             val tests = testsFor(bindingByProducer[-1].orEmpty())
             if (tests.isNotEmpty()) item.put("event", testEvent(tests))
@@ -110,6 +130,7 @@ internal object UniversalAuthAnalyzer {
         chosen.forEach { index ->
             val node = nodes[index]
             val request = buildRequest(node.event, node.method, node.url, baseOrigin, replacements)
+            request.put("description", provenanceDescription(index, loginIndex, bindings, causalEdges, stepNumbers))
             val item = JSONObject()
                 .put("name", "%02d %s · %s %s".format(Locale.US, sequence++, role(index, loginIndex, verifyIndex, node), node.method, compact(node.url)))
                 .put("request", request)
@@ -126,8 +147,13 @@ internal object UniversalAuthAnalyzer {
         val changedStorage = changedStorage(before, after)
         val realLogin = !login.event.optBoolean("_authSynthetic", false)
         val responseEvidence = hasResponse(login.event)
+        val provenanceComplete = selected.all { index ->
+            index == loginIndex ||
+                bindings.any { it.consumer == index || it.producer.index == index } ||
+                causalEdges.any { it.consumer == index || it.producer == index }
+        }
         val confidence = when {
-            unresolvedVariables.isEmpty() && realLogin && scores[loginIndex] >= 15 && responseEvidence && (verifyIndex != null || changedCookies.isNotEmpty() || bindings.isNotEmpty()) -> "HIGH"
+            provenanceComplete && unresolvedVariables.isEmpty() && realLogin && scores[loginIndex] >= 15 && responseEvidence && (verifyIndex != null || changedCookies.isNotEmpty() || bindings.isNotEmpty()) -> "HIGH"
             scores[loginIndex] >= 8 -> "MEDIUM"
             else -> "LOW"
         }
@@ -137,6 +163,8 @@ internal object UniversalAuthAnalyzer {
         if (login.event.optBoolean("_authFormCorrelated", false)) notes.add("DOM form submit was correlated with the real network request")
         if (verifyIndex != null) notes.add("Session verification candidate: ${nodes[verifyIndex].method} ${nodes[verifyIndex].url}")
         if (bindings.isNotEmpty()) notes.add("Detected ${bindings.size} response → request dependencies")
+        notes.add("Causal provenance retained ${selected.size} request(s) connected to the login root")
+        if (prunedUnproven > 0) notes.add("Pruned $prunedUnproven selected candidate(s) without a proven causal path to login")
         if (authEndIndex < nodes.lastIndex) notes.add("AUTH boundary stopped at logout/sign-out; later requests were excluded")
         if (unresolvedVariables.isNotEmpty()) notes.add("UNRESOLVED dynamic dependencies: ${unresolvedVariables.joinToString(", ")}")
         if (changedCookies.isNotEmpty()) notes.add("Cookies changed: ${changedCookies.joinToString(", ")}")
@@ -512,6 +540,74 @@ internal object UniversalAuthAnalyzer {
         return CausalResult(bindings, usedVariables, edges)
     }
 
+    private fun provenComponent(loginIndex: Int, bindings: List<Binding>, edges: List<CausalEdge>): Set<Int> {
+        val adjacency = linkedMapOf<Int, MutableSet<Int>>()
+
+        fun connect(a: Int, b: Int) {
+            if (a < 0 || b < 0 || a == b) return
+            adjacency.getOrPut(a) { linkedSetOf() }.add(b)
+            adjacency.getOrPut(b) { linkedSetOf() }.add(a)
+        }
+
+        bindings.forEach { binding ->
+            if (binding.producer.index >= 0) connect(binding.producer.index, binding.consumer)
+        }
+        edges.forEach { edge -> connect(edge.producer, edge.consumer) }
+
+        val visited = linkedSetOf(loginIndex)
+        val queue = ArrayDeque<Int>()
+        queue.add(loginIndex)
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            adjacency[current].orEmpty().forEach { next ->
+                if (visited.add(next)) queue.add(next)
+            }
+        }
+        return visited
+    }
+
+    private fun provenanceDescription(
+        index: Int,
+        loginIndex: Int,
+        bindings: List<Binding>,
+        edges: List<CausalEdge>,
+        stepNumbers: Map<Int, Int>
+    ): String {
+        val lines = mutableListOf<String>()
+        lines.add("Reconstructed from captured AUTH traffic by web research.")
+        lines.add("")
+        lines.add("AUTH provenance:")
+        if (index == loginIndex) lines.add("- Root: selected login request.")
+
+        bindings.filter { it.consumer == index && it.producer.index >= 0 }.forEach { binding ->
+            val producerStep = stepNumbers[binding.producer.index]
+            val from = producerStep?.let { "step $it" } ?: "an earlier captured response"
+            lines.add("- Consumes {{${binding.variable}}} from $from (${binding.producer.kind}:${binding.producer.key}).")
+        }
+        bindings.filter { it.producer.index == index }.forEach { binding ->
+            val consumerStep = stepNumbers[binding.consumer]
+            val to = consumerStep?.let { "step $it" } ?: "a later AUTH request"
+            lines.add("- Produces {{${binding.variable}}} for $to (${binding.producer.kind}:${binding.producer.key}).")
+        }
+
+        edges.filter { it.consumer == index }.forEach { edge ->
+            if (bindings.any { it.consumer == index && it.producer.index == edge.producer }) return@forEach
+            val producerStep = stepNumbers[edge.producer]
+            val from = producerStep?.let { "step $it" } ?: "an earlier AUTH step"
+            val detail = edge.label.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
+            lines.add("- Reached from $from via ${edge.kind}$detail.")
+        }
+        edges.filter { it.producer == index }.forEach { edge ->
+            if (bindings.any { it.producer.index == index && it.consumer == edge.consumer }) return@forEach
+            val consumerStep = stepNumbers[edge.consumer]
+            val to = consumerStep?.let { "step $it" } ?: "a later AUTH step"
+            val detail = edge.label.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
+            lines.add("- Leads to $to via ${edge.kind}$detail.")
+        }
+
+        if (lines.size == 3 && index != loginIndex) lines.add("- Included because it belongs to the proven causal component connected to login.")
+        return lines.joinToString("\n")
+    }
     private fun stepTransitionMatches(producer: Producer, node: Node): Boolean {
         val key = normalizeField(producer.key)
         if (!(key.contains("next") || key.contains("step") || key.contains("flow") || key.contains("action"))) return false
