@@ -154,11 +154,11 @@ class UniversalAuthAnalyzerReplayTest {
         assertFalse(validateBody.contains(oid))
         assertFalse(validateBody.contains(device))
 
-        assertTrue(connectBody.contains("{{auth_token}}"))
-        assertTrue(connectBody.contains("{{sid}}"))
-        assertTrue(connectBody.contains("{{device_id}}"))
+        assertTemplateField(connectBody, "auth_token", authToken)
+        assertTemplateField(connectBody, "sid", sid)
+        assertTemplateField(connectBody, "device_id", device)
         assertTrue(connectBody.contains("{{oid}}"))
-        assertTrue(connectBody.contains("{{to}}"))
+        assertTemplateField(connectBody, "to", to)
         assertFalse(connectBody.contains(device))
         assertFalse(connectBody.contains(to))
 
@@ -174,6 +174,25 @@ class UniversalAuthAnalyzerReplayTest {
         assertFalse(environmentText.contains(device))
         assertFalse(environmentText.contains(to))
         assertFalse(environmentText.contains("old-captured-value"))
+    }
+
+    private fun assertTemplateField(bodyJson: String, key: String, captured: String) {
+        val body = JSONObject(bodyJson)
+        val values = when (body.optString("mode", "")) {
+            "urlencoded" -> body.optJSONArray("urlencoded") ?: JSONArray()
+            "formdata" -> body.optJSONArray("formdata") ?: JSONArray()
+            else -> JSONArray()
+        }
+        var value = ""
+        for (index in 0 until values.length()) {
+            val field = values.optJSONObject(index) ?: continue
+            if (field.optString("key", "") == key) {
+                value = field.optString("value", "")
+                break
+            }
+        }
+        assertTrue("$key must be a runtime template, got: $value", value.startsWith("{{") && value.endsWith("}}"))
+        assertFalse("$key must not reuse captured value", value.contains(captured))
     }
 
     private fun idUrl(action: String, appSettings: String, challenge: String, state: String): String =
