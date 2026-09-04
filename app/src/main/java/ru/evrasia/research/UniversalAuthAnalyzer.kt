@@ -1150,6 +1150,10 @@ internal object UniversalAuthAnalyzer {
                                 val parsed: Any = if (trimmed.startsWith("{")) JSONObject(trimmed) else JSONArray(trimmed)
                                 collectRouteJsonProducers(parsed, emptyList(), index, route, key, out)
                             } catch (_: Exception) {}
+                        } else {
+                            decodeBase64Json(trimmed)?.let { parsed ->
+                                collectRouteBase64JsonProducers(parsed, emptyList(), index, route, key, out)
+                            }
                         }
                     }
                 } catch (_: Exception) {}
@@ -1210,6 +1214,49 @@ internal object UniversalAuthAnalyzer {
         }
     }
 
+    private fun collectRouteBase64JsonProducers(
+        value: Any?,
+        path: List<String>,
+        index: Int,
+        route: String,
+        queryKey: String,
+        out: MutableList<Producer>
+    ) {
+        when (value) {
+            is JSONObject -> {
+                val keys = value.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    collectRouteBase64JsonProducers(value.opt(key), path + key, index, route, queryKey, out)
+                }
+            }
+            is JSONArray -> for (i in 0 until minOf(value.length(), 100)) {
+                collectRouteBase64JsonProducers(value.opt(i), path + i.toString(), index, route, queryKey, out)
+            }
+            null, JSONObject.NULL -> Unit
+            else -> if (path.isNotEmpty()) {
+                val text = value.toString()
+                if (reusable(text)) out.add(Producer(index, path.last(), text, "body-route-query-base64-json", path = listOf(route) + path, header = queryKey))
+            }
+        }
+    }
+
+    private fun decodeBase64Json(raw: String): Any? {
+        if (raw.length !in 8..8192 || raw.any { it.isWhitespace() }) return null
+        val normalized = raw.replace('-', '+').replace('_', '/')
+        val padded = normalized + "=".repeat((4 - normalized.length % 4) % 4)
+        val decoded = try { Base64.getDecoder().decode(padded).toString(Charsets.UTF_8) } catch (_: Exception) { return null }
+        val text = decoded.trim()
+        return try {
+            when {
+                text.startsWith("{") -> JSONObject(text)
+                text.startsWith("[") -> JSONArray(text)
+                else -> null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
     private fun collectJson(value: Any?, path: List<String>, index: Int, out: MutableList<Producer>) {
         when (value) {
             is JSONObject -> {
@@ -1554,7 +1601,7 @@ internal object UniversalAuthAnalyzer {
                 "header" -> lines.add("try { const value = pm.response.headers.get(${JSONObject.quote(binding.producer.header)}); if (value) pm.collectionVariables.set($variable, String(value)); } catch (e) {}")
                 "location" -> lines.add("try { const value = new URL(pm.response.headers.get('Location'), pm.request.url.toString()).searchParams.get(${JSONObject.quote(binding.producer.header)}); if (value) pm.collectionVariables.set($variable, value); } catch (e) {}")
                 "redirect" -> lines.add("try { const value = pm.response.headers.get('Location'); if (value) pm.collectionVariables.set($variable, new URL(value, pm.request.url.toString()).toString()); } catch (e) {}")
-                "body-route", "body-route-query", "body-route-query-json" -> {
+                "body-route", "body-route-query", "body-route-query-json", "body-route-query-base64-json" -> {
                     val route = binding.producer.path?.firstOrNull().orEmpty()
                     val jsonPath = binding.producer.path?.drop(1).orEmpty()
                     lines.add("try {")
@@ -1581,7 +1628,22 @@ internal object UniversalAuthAnalyzer {
                             lines.add("    const rawValue = found.searchParams.get($key);")
                             lines.add("    if (rawValue) {")
                             lines.add("      let value = JSON.parse(rawValue);")
-                            lines.add("      for (const key of ${JSONArray(jsonPath)}) value = value == null ? undefined : value[key];")
+                            lines.add("      for (const key of \${JSONArray(jsonPath)}) value = value == null ? undefined : value[key];")
+                            lines.add("      if (value !== undefined && value !== null) pm.collectionVariables.set($variable, String(value));")
+                            lines.add("    }")
+                            lines.add("  }")
+                        }
+                        "body-route-query-base64-json" -> {
+                            val key = JSONObject.quote(binding.producer.header)
+                            lines.add("  if (found) {")
+                            lines.add("    let rawValue = found.searchParams.get($key);")
+                            lines.add("    if (rawValue) {")
+                            lines.add("      rawValue = rawValue.replace(/-/g, '+').replace(/_/g, '/');")
+                            lines.add("      while (rawValue.length % 4) rawValue += '=';")
+                            lines.add("      const binary = atob(rawValue);")
+                            lines.add("      let encoded = ''; for (let i = 0; i < binary.length; i++) encoded += '%' + ('00' + binary.charCodeAt(i).toString(16)).slice(-2);")
+                            lines.add("      let value = JSON.parse(decodeURIComponent(encoded));")
+                            lines.add("      for (const key of \${JSONArray(jsonPath)}) value = value == null ? undefined : value[key];")
                             lines.add("      if (value !== undefined && value !== null) pm.collectionVariables.set($variable, String(value));")
                             lines.add("    }")
                             lines.add("  }")
