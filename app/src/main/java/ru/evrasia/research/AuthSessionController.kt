@@ -93,13 +93,14 @@ internal class AuthSessionController(
                     } catch (_: Exception) {
                         ""
                     }
+                    val replayValidation = PostmanReplayabilityValidator.validate(result.collectionJson, environment)
                     activity.runOnUiThread {
                         processing = false
                         if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                         Toast.makeText(
                             activity,
-                            "AUTH: ${result.confidence} · ${result.requestCount} запросов",
-                            Toast.LENGTH_SHORT
+                            if (replayValidation.ok) "AUTH: ${result.confidence} · ${result.requestCount} запросов · replay OK" else "AUTH: replay FAIL · ${replayValidation.issues.size} ошибок",
+                            if (replayValidation.ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
                         ).show()
                         PostmanDelivery.deliver(
                             activity,
