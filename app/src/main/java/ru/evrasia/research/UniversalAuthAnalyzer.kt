@@ -266,6 +266,7 @@ internal object UniversalAuthAnalyzer {
             .sortedBy { it.optLong("time", 0L) }
             .toMutableList()
 
+        coalesceDuplicateGetEvidence(real)
         attachReplayRedirectEvidence(real)
 
         events.withIndex().filter { it.value.optString("source", "") == "auth-page-source" }.forEach { entry ->
@@ -340,6 +341,101 @@ internal object UniversalAuthAnalyzer {
         return real.sortedBy { it.optLong("time", 0L) }.map { event ->
             Node(event, event.optString("source", ""), NetworkEventClassifier.methodOf(event).ifBlank { event.optString("method", "GET") }.uppercase(Locale.US), event.optString("url", ""), event.optLong("time", 0L))
         } to hints
+    }
+
+    private fun coalesceDuplicateGetEvidence(events: MutableList<JSONObject>) {
+        var index = 0
+        while (index < events.size) {
+            val primary = events[index]
+            if (!duplicateGetCandidate(primary)) {
+                index++
+                continue
+            }
+            val primaryTime = primary.optLong("time", 0L)
+            val primaryUrl = normalizeUrl(primary.optString("url", ""))
+            var next = index + 1
+            while (next < events.size) {
+                val candidate = events[next]
+                val candidateTime = candidate.optLong("time", 0L)
+                if (primaryTime > 0L && candidateTime > 0L && candidateTime - primaryTime > 1500L) break
+                if (
+                    duplicateGetCandidate(candidate) &&
+                    normalizeUrl(candidate.optString("url", "")) == primaryUrl &&
+                    (lightweightRequestEvidence(primary) || lightweightRequestEvidence(candidate))
+                ) {
+                    mergeDuplicateEvidence(primary, candidate)
+                    events.removeAt(next)
+                    continue
+                }
+                next++
+            }
+            index++
+        }
+    }
+
+    private fun duplicateGetCandidate(event: JSONObject): Boolean {
+        val source = event.optString("source", "")
+        if (source !in setOf("webview", "navigation", "new-window")) return false
+        val method = NetworkEventClassifier.methodOf(event).ifBlank { event.optString("method", "GET") }
+        if (!method.equals("GET", true)) return false
+        if (!event.optString("url", "").startsWith("http")) return false
+        return event.optString("requestBody", "").isBlank()
+    }
+
+    private fun lightweightRequestEvidence(event: JSONObject): Boolean {
+        if (event.optInt("status", 0) > 0) return false
+        if (event.optString("responseBody", "").isNotBlank()) return false
+        if (event.optString("responseHeadersRaw", "").isNotBlank()) return false
+        if (event.optJSONObject("responseHeaders")?.length() ?: 0 > 0) return false
+        if (event.optString("redirectURL", "").isNotBlank()) return false
+        return true
+    }
+
+    private fun mergeDuplicateEvidence(target: JSONObject, source: JSONObject) {
+        val targetTime = target.optLong("time", 0L)
+        val sourceTime = source.optLong("time", 0L)
+        if (targetTime <= 0L || (sourceTime > 0L && sourceTime < targetTime)) target.put("time", sourceTime)
+
+        val first = listOf(
+            target.optInt("_authOrderFirst", target.optInt("_authOrder", Int.MAX_VALUE)),
+            source.optInt("_authOrderFirst", source.optInt("_authOrder", Int.MAX_VALUE))
+        ).filter { it >= 0 && it != Int.MAX_VALUE }.minOrNull()
+        val last = listOf(
+            target.optInt("_authOrderLast", target.optInt("_authOrder", -1)),
+            source.optInt("_authOrderLast", source.optInt("_authOrder", -1))
+        ).filter { it >= 0 }.maxOrNull()
+        first?.let { target.put("_authOrderFirst", it) }
+        last?.let { target.put("_authOrderLast", it) }
+
+        listOf(
+            "status",
+            "statusText",
+            "mimeType",
+            "responseBody",
+            "responseHeadersRaw",
+            "redirectURL",
+            "requestMimeType"
+        ).forEach { key ->
+            val current = target.opt(key)
+            val incoming = source.opt(key)
+            val currentBlank = current == null || current == JSONObject.NULL || current.toString().isBlank() || (key == "status" && target.optInt(key, 0) <= 0)
+            val incomingUsable = incoming != null && incoming != JSONObject.NULL && incoming.toString().isNotBlank() && (key != "status" || source.optInt(key, 0) > 0)
+            if (currentBlank && incomingUsable) target.put(key, incoming)
+        }
+
+        listOf("responseHeaders", "requestHeaders", "headers").forEach { key ->
+            val current = target.optJSONObject(key)
+            val incoming = source.optJSONObject(key)
+            if ((current == null || current.length() == 0) && incoming != null && incoming.length() > 0) {
+                target.put(key, JSONObject(incoming.toString()))
+            }
+        }
+
+        val duplicateSources = target.optJSONArray("_authDuplicateSources") ?: JSONArray().also { target.put("_authDuplicateSources", it) }
+        val sourceName = source.optString("source", "")
+        if (sourceName.isNotBlank() && (0 until duplicateSources.length()).none { duplicateSources.optString(it, "") == sourceName }) {
+            duplicateSources.put(sourceName)
+        }
     }
 
     private fun attachReplayRedirectEvidence(events: MutableList<JSONObject>) {
