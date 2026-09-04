@@ -342,6 +342,9 @@ internal object UniversalAuthAnalyzer {
         val bindings = mutableListOf<Binding>()
         val usedVariables = linkedSetOf<String>()
         val variableByValue = linkedMapOf<String, String>()
+        val navigationCache = Array(nodes.size) { index ->
+            if (isStatic(nodes[index])) emptyList() else navigationTargets(nodes[index])
+        }
         var changed = true
         var pass = 0
 
@@ -369,9 +372,9 @@ internal object UniversalAuthAnalyzer {
                     if (producer.index >= 0 && selected.add(producer.index)) changed = true
                 }
 
-                val navigationSource = findPreviousNavigationSource(nodes, consumer, origins, endIndex)
+                val navigationSource = findPreviousNavigationSource(nodes, navigationCache, consumer, origins, endIndex)
                 if (navigationSource != null) {
-                    val navigationProducer = navigationBindingProducer(nodes[navigationSource], navigationSource, nodes[consumer].url)
+                    val navigationProducer = navigationBindingProducer(nodes[navigationSource], navigationCache[navigationSource], navigationSource, nodes[consumer].url)
                     if (navigationProducer != null && bindings.none { it.consumer == consumer && it.producer.kind == navigationProducer.kind && it.producer.index == navigationSource }) {
                         val variable = variableByValue[navigationProducer.value] ?: run {
                             val created = uniqueVariable("redirect_url", usedVariables)
@@ -395,14 +398,14 @@ internal object UniversalAuthAnalyzer {
                         for (index in sourceIndex + 1..minOf(nodes.lastIndex, endIndex)) {
                             val candidate = nodes[index]
                             if (candidate.time > 0L && candidate.time > limitTime) break
-                            if ((isNoise(candidate, origins) && !isNavigationCarrier(candidate)) || !isExplicitAuthStep(candidate)) continue
+                            if ((isNoise(candidate, origins) && navigationCache[index].isEmpty()) || !isExplicitAuthStep(candidate)) continue
                             if (containsMaterial(requestMaterial(candidate.event), producer.value) || stepTransitionMatches(producer, candidate)) {
                                 if (selected.add(index)) changed = true
                             }
                         }
                     }
 
-                val navigationIndex = findNextNavigationTarget(nodes, sourceIndex, navigationTargets(source), origins, endIndex)
+                val navigationIndex = findNextNavigationTarget(nodes, sourceIndex, navigationCache[sourceIndex], origins, endIndex)
                 if (navigationIndex != null && selected.add(navigationIndex)) changed = true
             }
         }
@@ -427,30 +430,36 @@ internal object UniversalAuthAnalyzer {
         return nodes.lastIndex
     }
 
-    private fun findPreviousNavigationSource(nodes: List<Node>, consumerIndex: Int, origins: Set<String>, endIndex: Int): Int? {
+    private fun findPreviousNavigationSource(
+        nodes: List<Node>,
+        navigationCache: Array<List<String>>,
+        consumerIndex: Int,
+        origins: Set<String>,
+        endIndex: Int
+    ): Int? {
         if (consumerIndex <= 0 || consumerIndex > endIndex) return null
         val target = nodes[consumerIndex].url
         for (index in consumerIndex - 1 downTo 0) {
             val source = nodes[index]
             if (isStatic(source) || isLogoutUrl(source.url)) continue
-            if (!documentLike(source) && navigationTargets(source).isEmpty()) continue
-            val direct = navigationTargets(source).any { navigationTargetMatches(it, target) }
-            val referenced = responseReferencesTarget(source, target)
-            if (!direct && !referenced) continue
+            val targets = navigationCache[index]
+            if (!documentLike(source) && targets.isEmpty()) continue
+            val direct = targets.any { navigationTargetMatches(it, target) }
+            if (!direct) continue
             val sourceOrigin = origin(source.url)
-            if (sourceOrigin.isNotBlank() && sourceOrigin !in origins && !isCrossOriginAuthBridge(source) && !direct && !referenced) continue
+            if (sourceOrigin.isNotBlank() && sourceOrigin !in origins && !isCrossOriginAuthBridge(source)) continue
             return index
         }
         return null
     }
 
-    private fun navigationBindingProducer(source: Node, index: Int, target: String): Producer? {
+    private fun navigationBindingProducer(source: Node, targets: List<String>, index: Int, target: String): Producer? {
         if (target.isBlank()) return null
         val capturedRedirect = source.event.optString("redirectURL", "")
         if (capturedRedirect.isNotBlank() && navigationTargetMatches(capturedRedirect, target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
         val location = responseHeaders(source.event).firstOrNull { it.first.equals("Location", true) && it.second.isNotBlank() }?.second.orEmpty()
         if (location.isNotBlank() && navigationTargetMatches(resolveNavigationUrl(source.url, location).orEmpty(), target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
-        if (navigationTargets(source).any { navigationTargetMatches(it, target) } || responseReferencesTarget(source, target)) return Producer(index, "redirect_url", target, "html-redirect")
+        if (targets.any { navigationTargetMatches(it, target) }) return Producer(index, "redirect_url", target, "html-redirect")
         return null
     }
     private fun responseReferencesTarget(source: Node, target: String): Boolean {
@@ -641,6 +650,11 @@ internal object UniversalAuthAnalyzer {
                     val parsed: Any = if (body.trimStart().startsWith("{")) JSONObject(body) else JSONArray(body)
                     collectNavigationJson(parsed, node.url, out)
                 } catch (_: Exception) {}
+            }
+
+            val normalizedBody = body.replace("&amp;", "&").replace("&#38;", "&").replace("\\u0026", "&").replace("\\/", "/")
+            Regex("https?://[^\\s\\\"'<>]+", RegexOption.IGNORE_CASE).findAll(normalizedBody).take(400).forEach { match ->
+                add(match.value.trimEnd(')', ']', '}', ',', ';'))
             }
 
             Regex("<meta\\b[^>]*>", RegexOption.IGNORE_CASE).findAll(body).take(100).forEach { match ->
