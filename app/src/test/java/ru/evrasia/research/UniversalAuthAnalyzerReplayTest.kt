@@ -118,7 +118,7 @@ class UniversalAuthAnalyzerReplayTest {
 
         val result = UniversalAuthAnalyzer.analyze(events, before, after)
         val validation = PostmanReplayabilityValidator.validate(result.collectionJson)
-        assertTrue(validation.issues.joinToString("\n"), validation.ok)
+        if (!validation.ok) throw AssertionError("FULL_SHAPE_REPLAYABILITY:\n" + validation.issues.joinToString("\n"))
 
         val collection = JSONObject(result.collectionJson)
         val items = collection.getJSONArray("item")
