@@ -62,7 +62,7 @@ internal object UniversalAuthAnalyzer {
             edge.consumer > authEndIndex || edge.producer > authEndIndex
         }
         val changedCookieNames = changedCookies(before.nativeCookies, after.nativeCookies)
-        val stableEndIndex = authenticatedStateBoundary(nodes, selected, loginIndex, authEndIndex)
+        val stableEndIndex = authenticatedStateBoundary(nodes, selected, loginIndex, authEndIndex, changedCookieNames)
             ?: stableAuthenticatedBoundary(nodes, selected, loginIndex, authEndIndex)
         if (stableEndIndex != null) {
             selected.removeAll { it > stableEndIndex }
@@ -112,6 +112,19 @@ internal object UniversalAuthAnalyzer {
             variables.putIfAbsent(binding.variable, VariableDef(binding.variable, "", "Automatically extracted from an earlier AUTH response"))
             if (binding.producer.value !in userReplacements) replacements.putIfAbsent(binding.producer.value, binding.variable)
         }
+        val preRequestScripts = linkedMapOf<Int, MutableList<String>>()
+        val localProducedAt = linkedMapOf<String, Int>()
+        addLocalRuntimeVariables(
+            nodes,
+            selected,
+            bindings,
+            userReplacements,
+            replacements,
+            variables,
+            usedVariables,
+            preRequestScripts,
+            localProducedAt
+        )
         addUnresolvedDynamicVariables(nodes, selected, replacements, variables, usedVariables, unresolvedVariables)
         addAuthHeaderVariables(nodes, selected, replacements, variables, usedVariables, unresolvedVariables)
         addUsedStorageVariables(nodes, selected, before, after, replacements, variables, usedVariables, unresolvedVariables)
@@ -134,7 +147,7 @@ internal object UniversalAuthAnalyzer {
                 .put("description", "AUTH provenance:\n- Seed: captured initial browser page used to establish cookies / page state before the proven causal AUTH component.")
             val item = JSONObject().put("name", "%02d Prepare authentication page".format(Locale.US, sequence++)).put("request", request)
             val tests = testsFor(bindingByProducer[-1].orEmpty())
-            if (tests.isNotEmpty()) item.put("event", testEvent(tests))
+            if (tests.isNotEmpty()) addScriptEvent(item, "test", tests)
             items.put(item)
         }
 
@@ -144,6 +157,9 @@ internal object UniversalAuthAnalyzer {
             stepReplacements.putAll(userReplacements)
             bindings.filter { binding -> binding.consumer == index && binding.producer.index < index }.forEach { binding ->
                 if (binding.producer.value !in userReplacements) stepReplacements[binding.producer.value] = binding.variable
+            }
+            localProducedAt.filterValues { producedAt -> producedAt <= index }.forEach { (raw, _) ->
+                replacements[raw]?.let { variable -> stepReplacements.putIfAbsent(raw, variable) }
             }
             replacements.forEach { (raw, variable) ->
                 if (variable in unresolvedVariables && containsMaterial(requestMaterial(node.event), raw)) stepReplacements.putIfAbsent(raw, variable)
@@ -157,8 +173,9 @@ internal object UniversalAuthAnalyzer {
                 item.put("protocolProfileBehavior", JSONObject().put("followRedirects", false))
             }
             buildResponse(node.event, request)?.let { item.put("response", JSONArray().put(it)) }
+            preRequestScripts[index]?.takeIf { it.isNotEmpty() }?.let { addScriptEvent(item, "prerequest", it) }
             val tests = testsFor(bindingByProducer[index].orEmpty())
-            if (tests.isNotEmpty()) item.put("event", testEvent(tests))
+            if (tests.isNotEmpty()) addScriptEvent(item, "test", tests)
             items.put(item)
         }
 
@@ -354,6 +371,8 @@ internal object UniversalAuthAnalyzer {
                     ?: return@forEach
                 val observedRedirect = event.optString("redirectURL", "")
                 candidate.put("_authObservedRedirect", observedRedirect)
+                val observedCookieNames = responseSetCookieNames(event)
+                if (observedCookieNames.isNotEmpty()) candidate.put("_authObservedSetCookieNames", JSONArray(observedCookieNames.toList()))
                 val candidateIndex = events.indexOf(candidate)
                 if (candidateIndex >= 0 && observedRedirect.isNotBlank()) {
                     val actualTarget = (candidateIndex + 1 until evidence.index)
@@ -678,7 +697,8 @@ internal object UniversalAuthAnalyzer {
         nodes: List<Node>,
         selected: Set<Int>,
         loginIndex: Int,
-        authEndIndex: Int
+        authEndIndex: Int,
+        changedCookieNames: List<String>
     ): Int? {
         val candidates = selected.asSequence()
             .filter { it in (loginIndex + 1)..authEndIndex }
@@ -688,6 +708,7 @@ internal object UniversalAuthAnalyzer {
         candidates.forEach { issuerIndex ->
             val issuedCookies = responseSetCookieNames(nodes[issuerIndex].event)
             if (issuedCookies.isEmpty()) return@forEach
+            if (changedCookieNames.any { changed -> issuedCookies.any { issued -> issued.equals(changed, true) } }) return issuerIndex
             candidates.asSequence()
                 .filter { it > issuerIndex }
                 .forEach { consumerIndex ->
@@ -721,6 +742,11 @@ internal object UniversalAuthAnalyzer {
                     val split = pair.indexOf('=')
                     if (split > 0) out.add(pair.substring(0, split).trim())
                 }
+            }
+        }
+        event.optJSONArray("_authObservedSetCookieNames")?.let { array ->
+            for (index in 0 until array.length()) {
+                array.optString(index, "").trim().takeIf { it.isNotBlank() }?.let(out::add)
             }
         }
         return out
@@ -771,7 +797,7 @@ internal object UniversalAuthAnalyzer {
         if (captured.isNotBlank() && navigationTargetMatches(captured, target)) return true
         val observed = source.event.optString("_authObservedRedirect", "")
         if (observed.isNotBlank() && navigationTargetMatches(observed, target)) return true
-        val location = directLocation
+        val location = responseHeaders(source.event).firstOrNull { it.first.equals("Location", true) && it.second.isNotBlank() }?.second.orEmpty()
         if (location.isNotBlank() && navigationTargetMatches(resolveNavigationUrl(source.url, location).orEmpty(), target)) return true
         return false
     }
@@ -1607,6 +1633,12 @@ internal object UniversalAuthAnalyzer {
     }
 
     private fun testEvent(lines: List<String>): JSONArray = JSONArray().put(JSONObject().put("listen", "test").put("script", JSONObject().put("type", "text/javascript").put("exec", JSONArray(lines))))
+
+    private fun addScriptEvent(item: JSONObject, listen: String, lines: List<String>) {
+        if (lines.isEmpty()) return
+        val events = item.optJSONArray("event") ?: JSONArray().also { item.put("event", it) }
+        events.put(JSONObject().put("listen", listen).put("script", JSONObject().put("type", "text/javascript").put("exec", JSONArray(lines))))
+    }
     private fun role(index: Int, login: Int, verify: Int?, node: Node): String = when { index == login -> "Login"; index == verify -> "Verify authenticated session"; looksRefresh(node) -> "Refresh / token renewal"; index < login -> "Prepare / auth dependency"; hasCredentials(node.event) -> "Authentication step"; else -> "Auth dependency" }
 
     private fun dedupe(nodes: List<Node>, selected: Set<Int>): List<Int> {
