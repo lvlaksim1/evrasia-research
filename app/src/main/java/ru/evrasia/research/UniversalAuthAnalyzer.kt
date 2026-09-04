@@ -139,6 +139,48 @@ internal object UniversalAuthAnalyzer {
             .sortedBy { it.optLong("time", 0L) }
             .toMutableList()
 
+        events.filter { it.optString("source", "") == "auth-page-source" }.forEach { page ->
+            val pageUrl = page.optString("url", "")
+            val pageTime = page.optLong("time", 0L)
+            val content = page.optString("content", "")
+            if (!pageUrl.startsWith("http") || content.isBlank()) return@forEach
+
+            val candidate = real.withIndex()
+                .filter { entry ->
+                    val event = entry.value
+                    val method = NetworkEventClassifier.methodOf(event).ifBlank { event.optString("method", "GET") }
+                    val eventTime = event.optLong("time", 0L)
+                    method.equals("GET", true) &&
+                        normalizeUrl(event.optString("url", "")) == normalizeUrl(pageUrl) &&
+                        (pageTime <= 0L || eventTime <= 0L || abs(pageTime - eventTime) <= 8000L) &&
+                        !event.optBoolean("_authPageSourceAttached", false)
+                }
+                .minByOrNull { entry ->
+                    val eventTime = entry.value.optLong("time", 0L)
+                    if (pageTime > 0L && eventTime > 0L) abs(pageTime - eventTime) else Long.MAX_VALUE
+                }
+
+            if (candidate != null) {
+                val target = candidate.value
+                target.put("_authPageSourceAttached", true)
+                target.put("_authPageSourceTime", pageTime)
+                if (target.optString("responseBody", "").isBlank()) target.put("responseBody", content)
+                if (target.optString("mimeType", "").isBlank()) target.put("mimeType", "text/html; charset=utf-8")
+            } else {
+                real.add(
+                    JSONObject()
+                        .put("source", "auth-page-source")
+                        .put("time", pageTime)
+                        .put("method", "GET")
+                        .put("url", pageUrl)
+                        .put("status", 200)
+                        .put("mimeType", "text/html; charset=utf-8")
+                        .put("responseBody", content)
+                        .put("_authPageSourceSynthetic", true)
+                )
+            }
+        }
+
         hints.forEach { hint ->
             val candidate = real.withIndex().mapNotNull { entry ->
                 val event = entry.value
