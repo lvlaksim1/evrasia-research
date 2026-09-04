@@ -118,7 +118,34 @@ class UniversalAuthAnalyzerReplayTest {
 
         val result = UniversalAuthAnalyzer.analyze(events, before, after)
         val validation = PostmanReplayabilityValidator.validate(result.collectionJson)
-        if (!validation.ok) throw AssertionError("FULL_SHAPE_REPLAYABILITY:\n" + validation.issues.joinToString("\n"))
+        if (!validation.ok) {
+            val debugCollection = JSONObject(result.collectionJson)
+            val debugItems = debugCollection.optJSONArray("item") ?: JSONArray()
+            val debugVariables = debugCollection.optJSONArray("variable") ?: JSONArray()
+            val diagnostic = buildString {
+                append("FULL_SHAPE_REPLAYABILITY:\n")
+                validation.issues.forEach { append("- ").append(it).append('\n') }
+                append("NOTES:\n")
+                result.notes.forEach { append("- ").append(it).append('\n') }
+                append("ITEMS:\n")
+                for (itemIndex in 0 until debugItems.length()) {
+                    val item = debugItems.optJSONObject(itemIndex) ?: continue
+                    val request = item.optJSONObject("request") ?: JSONObject()
+                    append(itemIndex + 1).append(" | ")
+                        .append(item.optString("name", "")).append(" | ")
+                        .append(request.optString("method", "")).append(" | ")
+                        .append(requestUrl(request)).append('\n')
+                    append("  ").append(request.optString("description", "").replace("\n", " | ")).append('\n')
+                }
+                append("VARIABLES:\n")
+                for (variableIndex in 0 until debugVariables.length()) {
+                    val variable = debugVariables.optJSONObject(variableIndex) ?: continue
+                    append(variable.optString("key", "")).append(" | ")
+                        .append(variable.optString("description", "")).append('\n')
+                }
+            }
+            throw AssertionError(diagnostic)
+        }
 
         val collection = JSONObject(result.collectionJson)
         val items = collection.getJSONArray("item")
