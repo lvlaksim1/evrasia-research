@@ -27,7 +27,8 @@ internal object PostmanEnvironmentSnapshotSafe {
             val description = variable.optString("description", "").ifBlank { "collection variable" }
             known[key] = KnownValue(variable.optString("value", ""), description)
             if (description.contains("Automatically extracted from an earlier AUTH response", true) ||
-                description.contains("Dynamically extracted AUTH value", true)) {
+                description.contains("Dynamically extracted AUTH value", true) ||
+                description.contains("UNRESOLVED", true)) {
                 runtimeDynamic.add(key)
             }
         }
