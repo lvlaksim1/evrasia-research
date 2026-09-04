@@ -572,29 +572,68 @@ internal object UniversalAuthAnalyzer {
 
     private fun collectProducers(nodes: List<Node>, hints: List<Hint>): List<Producer> {
         val out = mutableListOf<Producer>()
-        hints.forEach { hint -> hint.fields.forEach { (key, value) -> if (value.isNotBlank() && value !in setOf("[password]", "[file]") && (interestingKey(key) || tokenLike(value))) out.add(Producer(-1, key, value, "html")) } }
+        hints.forEach { hint ->
+            hint.fields.forEach { (key, value) ->
+                if (value.isNotBlank() && value !in setOf("[password]", "[file]") && (interestingKey(key) || tokenLike(value))) {
+                    out.add(Producer(-1, key, value, "html"))
+                }
+            }
+        }
+
         nodes.forEachIndexed { index, node ->
             val body = responseBody(node.event).trim()
-            if (body.startsWith("{") || body.startsWith("[")) try {
-                val parsed: Any = if (body.startsWith("{")) JSONObject(body) else JSONArray(body)
-                collectJson(parsed, emptyList(), index, out)
-            } catch (_: Exception) {}
+            if (body.startsWith("{") || body.startsWith("[")) {
+                try {
+                    val parsed: Any = if (body.startsWith("{")) JSONObject(body) else JSONArray(body)
+                    collectJson(parsed, emptyList(), index, out)
+                } catch (_: Exception) {}
+            }
+
             if (body.isNotBlank() && body.length <= 2_000_000) {
                 Regex("<input\\b[^>]*>", RegexOption.IGNORE_CASE).findAll(body).take(100).forEach { match ->
                     val attrs = htmlAttributes(match.value)
                     val key = attrs["name"].orEmpty()
                     val value = attrs["value"].orEmpty()
-                    if (key.isNotBlank() && value.isNotBlank() && (interestingKey(key) || tokenLike(value))) out.add(Producer(index, key, value, "html"))
+                    if (key.isNotBlank() && value.isNotBlank() && (interestingKey(key) || tokenLike(value))) {
+                        out.add(Producer(index, key, value, "html"))
+                    }
+                }
+
+                Regex("<meta\\b[^>]*>", RegexOption.IGNORE_CASE).findAll(body).take(100).forEach { match ->
+                    val attrs = htmlAttributes(match.value)
+                    if (!attrs["http-equiv"].orEmpty().equals("refresh", true)) return@forEach
+                    val raw = Regex("(?i)url\\s*=\\s*['\"]?([^'\";]+)").find(attrs["content"].orEmpty())?.groupValues?.getOrNull(1).orEmpty()
+                    val target = resolveNavigationUrl(node.url, raw) ?: return@forEach
+                    out.add(Producer(index, "redirect_url", target, "html-redirect"))
+                }
+
+                Regex("(?i)(?:window\\.)?location(?:\\.href)?\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { match ->
+                    resolveNavigationUrl(node.url, match.groupValues[1])?.let { target ->
+                        out.add(Producer(index, "redirect_url", target, "html-redirect"))
+                    }
+                }
+
+                Regex("(?i)\\b(?:redirect|next|return|continue)[A-Za-z0-9_]*URL\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { match ->
+                    resolveNavigationUrl(node.url, match.groupValues[1])?.let { target ->
+                        out.add(Producer(index, "redirect_url", target, "html-redirect"))
+                    }
                 }
             }
+
             responseHeaders(node.event).forEach { (name, value) ->
                 val lower = name.lowercase(Locale.US)
                 if (lower == "set-cookie") return@forEach
-                if (lower == "location") try {
-                    val location = URL(URL(node.url), value)
-                    parseUrlEncoded(location.query.orEmpty()).forEach { (key, queryValue) -> if (interestingKey(key) && reusable(queryValue)) out.add(Producer(index, key, queryValue, "location", header = key)) }
-                } catch (_: Exception) {}
-                else if ((lower.contains("token") || lower.contains("csrf") || lower.contains("xsrf") || lower == "authorization") && reusable(value)) out.add(Producer(index, name, value, "header", header = name))
+                if (lower == "location") {
+                    try {
+                        val location = URL(URL(node.url), value)
+                        out.add(Producer(index, "redirect_url", location.toString(), "redirect", header = "Location"))
+                        parseUrlEncoded(location.query.orEmpty()).forEach { (key, queryValue) ->
+                            if (interestingKey(key) && reusable(queryValue)) out.add(Producer(index, key, queryValue, "location", header = key))
+                        }
+                    } catch (_: Exception) {}
+                } else if ((lower.contains("token") || lower.contains("csrf") || lower.contains("xsrf") || lower == "authorization") && reusable(value)) {
+                    out.add(Producer(index, name, value, "header", header = name))
+                }
             }
         }
         return out.distinctBy { "${it.index}|${it.key}|${it.value}|${it.kind}" }
@@ -602,10 +641,21 @@ internal object UniversalAuthAnalyzer {
 
     private fun collectJson(value: Any?, path: List<String>, index: Int, out: MutableList<Producer>) {
         when (value) {
-            is JSONObject -> { val keys = value.keys(); while (keys.hasNext()) { val key = keys.next(); collectJson(value.opt(key), path + key, index, out) } }
+            is JSONObject -> {
+                val keys = value.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    collectJson(value.opt(key), path + key, index, out)
+                }
+            }
             is JSONArray -> for (i in 0 until minOf(value.length(), 100)) collectJson(value.opt(i), path + i.toString(), index, out)
             null, JSONObject.NULL -> Unit
-            else -> if (path.isNotEmpty()) { val text = value.toString(); val key = path.last(); if (interestingKey(key) || tokenLike(text)) out.add(Producer(index, key, text, "json", path)) }
+            else -> if (path.isNotEmpty()) {
+                val text = value.toString()
+                val key = path.last()
+                val navigationValue = navigationKey(key) && (text.startsWith("http://") || text.startsWith("https://") || text.startsWith("/") || text.startsWith("//"))
+                if (interestingKey(key) || tokenLike(text) || navigationValue) out.add(Producer(index, key, text, "json", path))
+            }
         }
     }
 
