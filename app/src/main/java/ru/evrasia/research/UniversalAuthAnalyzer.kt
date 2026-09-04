@@ -349,7 +349,23 @@ internal object UniversalAuthAnalyzer {
                     .maxByOrNull { it.value.optLong("time", 0L) }
                     ?.value
                     ?: return@forEach
-                candidate.put("_authObservedRedirect", event.optString("redirectURL", ""))
+                val observedRedirect = event.optString("redirectURL", "")
+                candidate.put("_authObservedRedirect", observedRedirect)
+                val candidateIndex = events.indexOf(candidate)
+                if (candidateIndex >= 0 && observedRedirect.isNotBlank()) {
+                    val actualTarget = (candidateIndex + 1 until evidence.index)
+                        .asSequence()
+                        .map { index -> events[index] }
+                        .filter { target ->
+                            val source = target.optString("source", "")
+                            val method = NetworkEventClassifier.methodOf(target).ifBlank { target.optString("method", "GET") }
+                            source != "resource-copy" && method.equals("GET", true) && target.optString("url", "").startsWith("http")
+                        }
+                        .firstOrNull { target -> navigationTargetMatches(observedRedirect, target.optString("url", "")) }
+                        ?.optString("url", "")
+                        .orEmpty()
+                    if (actualTarget.isNotBlank()) candidate.put("_authObservedRedirectTarget", actualTarget)
+                }
             }
     }
 
