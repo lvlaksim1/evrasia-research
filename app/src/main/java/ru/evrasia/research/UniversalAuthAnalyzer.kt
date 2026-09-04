@@ -833,6 +833,18 @@ internal object UniversalAuthAnalyzer {
                 }
                 "header" -> lines.add("try { const value = pm.response.headers.get(${JSONObject.quote(binding.producer.header)}); if (value) pm.collectionVariables.set($variable, String(value)); } catch (e) {}")
                 "location" -> lines.add("try { const value = new URL(pm.response.headers.get('Location'), pm.request.url.toString()).searchParams.get(${JSONObject.quote(binding.producer.header)}); if (value) pm.collectionVariables.set($variable, value); } catch (e) {}")
+                "redirect" -> lines.add("try { const value = pm.response.headers.get('Location'); if (value) pm.collectionVariables.set($variable, new URL(value, pm.request.url.toString()).toString()); } catch (e) {}")
+                "html-redirect" -> {
+                    lines.add("try {")
+                    lines.add("  const text = pm.response.text();")
+                    lines.add("  let raw = null;")
+                    lines.add("  const meta = text.match(/<meta\\b[^>]*http-equiv=[\\\"']?refresh[\\\"']?[^>]*content=[\\\"'][^\\\"']*url\\s*=\\s*[\\\"']?([^\\\"';>]+)[^>]*>/i) || text.match(/<meta\\b[^>]*content=[\\\"'][^\\\"']*url\\s*=\\s*[\\\"']?([^\\\"';>]+)[^>]*http-equiv=[\\\"']?refresh[\\\"']?[^>]*>/i);")
+                    lines.add("  const direct = text.match(/(?:window\\.)?location(?:\\.href)?\\s*=\\s*[\\\"']([^\\\"']+)[\\\"']/i);")
+                    lines.add("  const named = text.match(/\\b(?:redirect|next|return|continue)[A-Za-z0-9_]*URL\\s*=\\s*[\\\"']([^\\\"']+)[\\\"']/i);")
+                    lines.add("  raw = (meta && meta[1]) || (direct && direct[1]) || (named && named[1]);")
+                    lines.add("  if (raw) { raw = raw.replace(/&amp;/g, '&').replace(/&#38;/g, '&'); pm.collectionVariables.set($variable, new URL(raw, pm.request.url.toString()).toString()); }")
+                    lines.add("} catch (e) {}")
+                }
                 "html" -> {
                     lines.add("try {")
                     lines.add("  const text = pm.response.text();")
