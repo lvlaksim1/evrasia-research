@@ -16,6 +16,13 @@ internal object UniversalAuthAnalyzer {
     private data class Hint(val event: JSONObject, val page: String, val url: String, val method: String, val time: Long, val fields: Map<String, String>)
     private data class Producer(val index: Int, val key: String, val value: String, val kind: String, val path: List<String>? = null, val header: String = "")
     private data class Binding(val producer: Producer, val consumer: Int, val variable: String)
+    private data class CausalEdge(val producer: Int, val consumer: Int, val kind: String, val label: String)
+    private data class CausalResult(
+        val bindings: MutableList<Binding>,
+        val usedVariables: LinkedHashSet<String>,
+        val edges: MutableList<CausalEdge>
+    )
+    private data class ForwardSelection(val indices: List<Int>, val edges: List<CausalEdge>)
     private data class VariableDef(val key: String, val value: String, val description: String)
 
     fun analyze(
@@ -41,9 +48,16 @@ internal object UniversalAuthAnalyzer {
         val producers = collectProducers(nodes, hints)
         val authEndIndex = authBoundary(nodes, loginIndex)
         val causal = expandCausalSelection(nodes, producers, selected, origins, authEndIndex)
-        val bindings = causal.first
-        val usedVariables = causal.second
+        val bindings = causal.bindings
+        val usedVariables = causal.usedVariables
+        val causalEdges = causal.edges
         selected.removeAll { it > authEndIndex }
+        bindings.removeAll { binding ->
+            binding.consumer > authEndIndex || binding.producer.index > authEndIndex
+        }
+        causalEdges.removeAll { edge ->
+            edge.consumer > authEndIndex || edge.producer > authEndIndex
+        }
         val stableEndIndex = stableAuthenticatedBoundary(nodes, selected, loginIndex, authEndIndex)
         if (stableEndIndex != null) {
             selected.removeAll { it > stableEndIndex }
