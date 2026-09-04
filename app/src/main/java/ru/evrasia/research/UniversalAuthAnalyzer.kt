@@ -59,7 +59,7 @@ internal object UniversalAuthAnalyzer {
             edge.consumer > authEndIndex || edge.producer > authEndIndex
         }
         val changedCookieNames = changedCookies(before.nativeCookies, after.nativeCookies)
-        val stableEndIndex = authenticatedStateBoundary(nodes, selected, loginIndex, authEndIndex, changedCookieNames)
+        val stableEndIndex = authenticatedStateBoundary(nodes, selected, loginIndex, authEndIndex)
             ?: stableAuthenticatedBoundary(nodes, selected, loginIndex, authEndIndex)
         if (stableEndIndex != null) {
             selected.removeAll { it > stableEndIndex }
@@ -675,17 +675,38 @@ internal object UniversalAuthAnalyzer {
         nodes: List<Node>,
         selected: Set<Int>,
         loginIndex: Int,
-        authEndIndex: Int,
-        changedCookieNames: List<String>
+        authEndIndex: Int
     ): Int? {
-        if (changedCookieNames.isEmpty()) return null
-        val changed = changedCookieNames.map { it.lowercase(Locale.US) }.toSet()
-        return selected.asSequence()
+        val candidates = selected.asSequence()
             .filter { it in (loginIndex + 1)..authEndIndex }
             .sorted()
-            .firstOrNull { index ->
-                responseSetCookieNames(nodes[index].event).any { it.lowercase(Locale.US) in changed }
-            }
+            .toList()
+
+        candidates.forEach { issuerIndex ->
+            val issuedCookies = responseSetCookieNames(nodes[issuerIndex].event)
+            if (issuedCookies.isEmpty()) return@forEach
+            candidates.asSequence()
+                .filter { it > issuerIndex }
+                .forEach { consumerIndex ->
+                    val consumer = nodes[consumerIndex]
+                    if (isStatic(consumer) || isTelemetry(consumer) || logoutOrRegistration(consumer.url)) return@forEach
+                    if (consumer.event.optInt("status", 0) !in 200..399) return@forEach
+                    if (looksLikeLoginResponse(consumer.event, consumer.url)) return@forEach
+                    val sentCookies = requestCookieNames(consumer.event)
+                    if (issuedCookies.any { issued -> sentCookies.any { sent -> sent.equals(issued, true) } }) return consumerIndex
+                }
+        }
+        return null
+    }
+
+    private fun requestCookieNames(event: JSONObject): Set<String> {
+        val cookie = requestHeaders(event).firstOrNull { it.first.equals("Cookie", true) }?.second.orEmpty()
+        if (cookie.isBlank()) return emptySet()
+        return cookie.split(';').mapNotNull { part ->
+            val pair = part.trim()
+            val split = pair.indexOf('=')
+            pair.substring(0, split.takeIf { it > 0 } ?: return@mapNotNull null).trim().takeIf { it.isNotBlank() }
+        }.toSet()
     }
 
     private fun responseSetCookieNames(event: JSONObject): Set<String> {
