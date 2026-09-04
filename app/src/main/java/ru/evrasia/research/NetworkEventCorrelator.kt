@@ -55,6 +55,7 @@ internal object NetworkEventCorrelator {
             if (!sameUrl(candidate.optString("url", ""), url)) continue
             val candidateMethod = candidate.optString("method", "GET").ifBlank { "GET" }.uppercase()
             if (candidateMethod != method) continue
+            if (!requestFingerprintsCompatible(candidate, record)) continue
             val candidateTime = candidate.optLong("time", 0L)
             val delta = if (time > 0L && candidateTime > 0L) abs(candidateTime - time) else 0L
             if (delta > MATCH_WINDOW_MS) continue
@@ -111,6 +112,23 @@ internal object NetworkEventCorrelator {
         "resource-copy", "resource-timing" -> hasSource(candidate, "webview") || hasSource(candidate, "fetch") || hasSource(candidate, "xhr")
         "navigation-timing" -> hasSource(candidate, "navigation") || hasSource(candidate, "webview")
         else -> false
+    }
+
+    private fun requestFingerprint(event: JSONObject): String? {
+        val raw = event.optString("requestBody", "").trim()
+        if (raw.isBlank() || raw in setOf("[FormData]", "[unavailable]", "[binary]")) return null
+        val mime = event.optString("requestMimeType", "").lowercase()
+        return if (mime.contains("x-www-form-urlencoded") || (!raw.startsWith("{") && !raw.startsWith("[") && raw.contains('='))) {
+            raw.split('&').filter { it.isNotBlank() }.sorted().joinToString("&")
+        } else {
+            raw
+        }
+    }
+
+    private fun requestFingerprintsCompatible(first: JSONObject, second: JSONObject): Boolean {
+        val firstFingerprint = requestFingerprint(first)
+        val secondFingerprint = requestFingerprint(second)
+        return firstFingerprint == null || secondFingerprint == null || firstFingerprint == secondFingerprint
     }
 
     private fun sameUrl(a: String, b: String): Boolean {
