@@ -18,15 +18,18 @@ internal object PostmanEnvironmentSnapshotSafe {
         val collection = JSONObject(collectionJson)
         val variables = collection.optJSONArray("variable") ?: JSONArray()
         val known = linkedMapOf<String, KnownValue>()
+        val runtimeDynamic = linkedSetOf<String>()
 
         for (index in 0 until variables.length()) {
             val variable = variables.optJSONObject(index) ?: continue
             val key = variable.optString("key", "").trim()
             if (key.isBlank()) continue
-            known[key] = KnownValue(
-                variable.optString("value", ""),
-                variable.optString("description", "").ifBlank { "collection variable" }
-            )
+            val description = variable.optString("description", "").ifBlank { "collection variable" }
+            known[key] = KnownValue(variable.optString("value", ""), description)
+            if (description.contains("Automatically extracted from an earlier AUTH response", true) ||
+                description.contains("Dynamically extracted AUTH value", true)) {
+                runtimeDynamic.add(key)
+            }
         }
 
         val items = collection.optJSONArray("item") ?: JSONArray()
@@ -60,6 +63,7 @@ internal object PostmanEnvironmentSnapshotSafe {
 
         val values = JSONArray()
         known.forEach { (key, item) ->
+            if (key in runtimeDynamic) return@forEach
             values.put(
                 JSONObject()
                     .put("key", key)
