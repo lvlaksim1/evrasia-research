@@ -757,7 +757,11 @@ internal object UniversalAuthAnalyzer {
         val capturedRedirect = source.event.optString("redirectURL", "")
         if (capturedRedirect.isNotBlank() && navigationTargetMatches(capturedRedirect, target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
         val observedRedirect = source.event.optString("_authObservedRedirect", "")
-        if (observedRedirect.isNotBlank() && navigationTargetMatches(observedRedirect, target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
+        val observedTarget = source.event.optString("_authObservedRedirectTarget", "")
+        if (observedRedirect.isNotBlank() && navigationTargetMatches(observedRedirect, target)) {
+            val route = routeKey(observedTarget.ifBlank { target })
+            return Producer(index, "redirect_url", target, "body-route", path = listOf(route))
+        }
         val location = responseHeaders(source.event).firstOrNull { it.first.equals("Location", true) && it.second.isNotBlank() }?.second.orEmpty()
         if (location.isNotBlank() && navigationTargetMatches(resolveNavigationUrl(source.url, location).orEmpty(), target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
         if (targets.any { navigationTargetMatches(it, target) }) return Producer(index, "redirect_url", target, "html-redirect")
@@ -943,6 +947,7 @@ internal object UniversalAuthAnalyzer {
 
         node.event.optString("redirectURL", "").takeIf { it.isNotBlank() }?.let(::add)
         node.event.optString("_authObservedRedirect", "").takeIf { it.isNotBlank() }?.let(::add)
+        node.event.optString("_authObservedRedirectTarget", "").takeIf { it.isNotBlank() }?.let(::add)
         responseHeaders(node.event).firstOrNull { it.first.equals("Location", true) }?.second?.let(::add)
 
         val body = responseBody(node.event)
@@ -1077,6 +1082,24 @@ internal object UniversalAuthAnalyzer {
                 }
             }
 
+            node.event.optString("_authObservedRedirectTarget", "").takeIf { it.isNotBlank() }?.let { actualTarget ->
+                val route = routeKey(actualTarget)
+                out.add(Producer(index, "redirect_url", actualTarget, "body-route", path = listOf(route)))
+                try {
+                    parseUrlEncoded(URL(actualTarget).query.orEmpty()).forEach { (key, queryValue) ->
+                        if ((interestingKey(key) || credentialKind(key) != null || tokenLike(queryValue)) && reusable(queryValue)) {
+                            out.add(Producer(index, key, queryValue, "body-route-query", path = listOf(route), header = key))
+                        }
+                        val trimmed = queryValue.trim()
+                        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+                            try {
+                                val parsed: Any = if (trimmed.startsWith("{")) JSONObject(trimmed) else JSONArray(trimmed)
+                                collectRouteJsonProducers(parsed, emptyList(), index, route, key, out)
+                            } catch (_: Exception) {}
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
             node.event.optString("redirectURL", "").takeIf { it.isNotBlank() }?.let { rawRedirect ->
                 out.add(Producer(index, "redirect_url", rawRedirect, "redirect", header = "Location"))
                 try {
@@ -1102,6 +1125,35 @@ internal object UniversalAuthAnalyzer {
             }
         }
         return out.distinctBy { "${it.index}|${it.key}|${it.value}|${it.kind}" }
+    }
+
+    private fun collectRouteJsonProducers(
+        value: Any?,
+        path: List<String>,
+        index: Int,
+        route: String,
+        queryKey: String,
+        out: MutableList<Producer>
+    ) {
+        when (value) {
+            is JSONObject -> {
+                val keys = value.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    collectRouteJsonProducers(value.opt(key), path + key, index, route, queryKey, out)
+                }
+            }
+            is JSONArray -> for (i in 0 until minOf(value.length(), 100)) {
+                collectRouteJsonProducers(value.opt(i), path + i.toString(), index, route, queryKey, out)
+            }
+            null, JSONObject.NULL -> Unit
+            else -> if (path.isNotEmpty()) {
+                val text = value.toString()
+                if (reusable(text)) {
+                    out.add(Producer(index, path.last(), text, "body-route-query-json", path = listOf(route) + path, header = queryKey))
+                }
+            }
+        }
     }
 
     private fun collectJson(value: Any?, path: List<String>, index: Int, out: MutableList<Producer>) {
@@ -1419,7 +1471,7 @@ internal object UniversalAuthAnalyzer {
 
     private fun isNavigationCarrier(node: Node): Boolean {
         if (documentLike(node)) return true
-        if (node.event.optString("redirectURL", "").isNotBlank() || node.event.optString("_authObservedRedirect", "").isNotBlank()) return true
+        if (node.event.optString("redirectURL", "").isNotBlank() || node.event.optString("_authObservedRedirect", "").isNotBlank() || node.event.optString("_authObservedRedirectTarget", "").isNotBlank()) return true
         if (responseHeaders(node.event).any { it.first.equals("Location", true) && it.second.isNotBlank() }) return true
         return navigationTargets(node).isNotEmpty()
     }
