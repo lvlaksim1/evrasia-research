@@ -431,6 +431,35 @@ internal object UniversalAuthAnalyzer {
             }
         }
 
+        val targetFieldSources = target.optJSONObject("_fieldSources") ?: JSONObject().also { target.put("_fieldSources", it) }
+        source.optJSONObject("_fieldSources")?.let { incomingFieldSources ->
+            val keys = incomingFieldSources.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                if (!targetFieldSources.has(key)) targetFieldSources.put(key, incomingFieldSources.opt(key))
+            }
+        }
+
+        val targetMerged = target.optJSONArray("_mergedEvents") ?: JSONArray().also { array ->
+            array.put(JSONObject(target.toString()).apply {
+                remove("_mergedEvents")
+                remove("_fieldSources")
+                remove("_authDuplicateSources")
+            })
+            target.put("_mergedEvents", array)
+        }
+        val sourceMerged = source.optJSONArray("_mergedEvents")
+        if (sourceMerged != null) {
+            for (mergedIndex in 0 until sourceMerged.length()) {
+                sourceMerged.optJSONObject(mergedIndex)?.let { targetMerged.put(JSONObject(it.toString())) }
+            }
+        } else {
+            targetMerged.put(JSONObject(source.toString()).apply {
+                remove("_mergedEvents")
+                remove("_authDuplicateSources")
+            })
+        }
+
         val duplicateSources = target.optJSONArray("_authDuplicateSources") ?: JSONArray().also { target.put("_authDuplicateSources", it) }
         val sourceName = source.optString("source", "")
         if (sourceName.isNotBlank() && (0 until duplicateSources.length()).none { duplicateSources.optString(it, "") == sourceName }) {
