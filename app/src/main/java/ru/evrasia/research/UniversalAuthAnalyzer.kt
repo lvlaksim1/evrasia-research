@@ -392,9 +392,17 @@ internal object UniversalAuthAnalyzer {
         selected: MutableSet<Int>,
         origins: Set<String>,
         endIndex: Int
-    ): Pair<MutableList<Binding>, LinkedHashSet<String>> {
+    ): CausalResult {
         val bindings = mutableListOf<Binding>()
         val usedVariables = linkedSetOf<String>()
+        val edges = mutableListOf<CausalEdge>()
+
+        fun addEdge(producer: Int, consumer: Int, kind: String, label: String) {
+            if (producer < 0 || consumer < 0 || producer == consumer) return
+            if (edges.none { it.producer == producer && it.consumer == consumer && it.kind == kind && it.label == label }) {
+                edges.add(CausalEdge(producer, consumer, kind, label))
+            }
+        }
         val variableByValue = linkedMapOf<String, String>()
         val requestMaterialCache = Array(nodes.size) { index -> requestMaterial(nodes[index].event) }
         val navigationCache = Array(nodes.size) { index ->
@@ -402,7 +410,7 @@ internal object UniversalAuthAnalyzer {
         }
         val producersByIndex = producers.groupBy { it.index }
         val consumerProducerCache = mutableMapOf<Int, List<Producer>>()
-        val forwardSelectionCache = mutableMapOf<Int, List<Int>>()
+        val forwardSelectionCache = mutableMapOf<Int, ForwardSelection>()
         val previousNavigationCache = IntArray(nodes.size) { -2 }
         val nextNavigationCache = IntArray(nodes.size) { -2 }
         var changed = true
@@ -433,6 +441,7 @@ internal object UniversalAuthAnalyzer {
                         }
                         bindings.add(Binding(producer, consumer, variable))
                     }
+                    if (producer.index >= 0) addEdge(producer.index, consumer, "value", variable)
                     if (producer.index >= 0 && selected.add(producer.index)) changed = true
                 }
 
@@ -455,6 +464,7 @@ internal object UniversalAuthAnalyzer {
                         }
                         bindings.add(Binding(navigationProducer, consumer, variable))
                     }
+                    addEdge(navigationSource, consumer, "navigation", navigationProducer.kind)
                     if (selected.add(navigationSource)) changed = true
                 }
             }
@@ -463,6 +473,7 @@ internal object UniversalAuthAnalyzer {
                 val source = nodes[sourceIndex]
                 val forward = forwardSelectionCache.getOrPut(sourceIndex) {
                     val out = linkedSetOf<Int>()
+                    val discoveredEdges = mutableListOf<CausalEdge>()
                     val limitTime = if (source.time > 0L) source.time + 120_000L else Long.MAX_VALUE
                     producersByIndex[sourceIndex].orEmpty()
                         .asSequence()
@@ -472,12 +483,16 @@ internal object UniversalAuthAnalyzer {
                                 val candidate = nodes[index]
                                 if (candidate.time > 0L && candidate.time > limitTime) break
                                 if ((isNoise(candidate, origins) && navigationCache[index].isEmpty()) || !isExplicitAuthStep(candidate)) continue
-                                if (containsMaterial(requestMaterialCache[index], producer.value) || stepTransitionMatches(producer, candidate)) out.add(index)
+                                val materialMatch = containsMaterial(requestMaterialCache[index], producer.value)
+                                val transitionMatch = stepTransitionMatches(producer, candidate)
+                                if (materialMatch || transitionMatch) out.add(index)
+                                if (transitionMatch && !materialMatch) discoveredEdges.add(CausalEdge(sourceIndex, index, "transition", producer.key))
                             }
                         }
-                    out.toList()
+                    ForwardSelection(out.toList(), discoveredEdges)
                 }
-                forward.forEach { index -> if (selected.add(index)) changed = true }
+                forward.edges.forEach { edge -> addEdge(edge.producer, edge.consumer, edge.kind, edge.label) }
+                forward.indices.forEach { index -> if (selected.add(index)) changed = true }
 
                 val navigationIndex = nextNavigationCache[sourceIndex].let { cached ->
                     if (cached >= -1) cached.takeIf { it >= 0 }
@@ -487,11 +502,14 @@ internal object UniversalAuthAnalyzer {
                         found
                     }
                 }
-                if (navigationIndex != null && selected.add(navigationIndex)) changed = true
+                if (navigationIndex != null) {
+                    addEdge(sourceIndex, navigationIndex, "navigation", "redirect/navigation")
+                    if (selected.add(navigationIndex)) changed = true
+                }
             }
         }
 
-        return bindings to usedVariables
+        return CausalResult(bindings, usedVariables, edges)
     }
 
     private fun stepTransitionMatches(producer: Producer, node: Node): Boolean {
