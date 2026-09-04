@@ -39,14 +39,17 @@ internal object UniversalAuthAnalyzer {
         addPrepareRequest(nodes, hints, loginIndex, selected, origins)
 
         val producers = collectProducers(nodes, hints)
-        val causal = expandCausalSelection(nodes, producers, selected, origins)
+        val authEndIndex = authBoundary(nodes, loginIndex)
+        val causal = expandCausalSelection(nodes, producers, selected, origins, authEndIndex)
         val bindings = causal.first
         val usedVariables = causal.second
+        selected.removeAll { it > authEndIndex }
 
         val verifyIndex: Int? = null
 
         val replacements = linkedMapOf<String, String>()
         val variables = linkedMapOf<String, VariableDef>()
+        val unresolvedVariables = linkedSetOf<String>()
         bindings.forEach { binding ->
             replacements.putIfAbsent(binding.producer.value, binding.variable)
             variables.putIfAbsent(binding.variable, VariableDef(binding.variable, "", "Automatically extracted from an earlier AUTH response"))
@@ -54,16 +57,18 @@ internal object UniversalAuthAnalyzer {
 
         selected.sorted().forEach { index ->
             credentialValues(nodes[index].event).forEach { (raw, kind) ->
+                if (kind !in setOf("login", "password", "otp")) return@forEach
                 if (raw.isBlank() || raw == "[password]" || replacements.containsKey(raw)) return@forEach
                 val variable = uniqueVariable(kind, usedVariables)
                 usedVariables.add(variable)
                 replacements[raw] = variable
-                variables.putIfAbsent(variable, VariableDef(variable, if (kind in setOf("login", "password", "otp")) "" else raw, credentialDescription(kind)))
+                variables.putIfAbsent(variable, VariableDef(variable, "", credentialDescription(kind)))
             }
         }
         if (selected.any { index -> fields(nodes[index].event).keys.any(::isPasswordField) }) variables.putIfAbsent("password", VariableDef("password", "", credentialDescription("password")))
-        addAuthHeaderVariables(nodes, selected, replacements, variables, usedVariables)
-        addUsedStorageVariables(nodes, selected, before, after, replacements, variables, usedVariables)
+        addUnresolvedDynamicVariables(nodes, selected, replacements, variables, usedVariables, unresolvedVariables)
+        addAuthHeaderVariables(nodes, selected, replacements, variables, usedVariables, unresolvedVariables)
+        addUsedStorageVariables(nodes, selected, before, after, replacements, variables, usedVariables, unresolvedVariables)
 
         val chosen = dedupe(nodes, selected)
         val selectedOrigins = chosen.map { origin(nodes[it].url) }.filter { it.isNotBlank() }.toSet()
@@ -98,7 +103,7 @@ internal object UniversalAuthAnalyzer {
         val realLogin = !login.event.optBoolean("_authSynthetic", false)
         val responseEvidence = hasResponse(login.event)
         val confidence = when {
-            realLogin && scores[loginIndex] >= 15 && responseEvidence && (verifyIndex != null || changedCookies.isNotEmpty() || bindings.isNotEmpty()) -> "HIGH"
+            unresolvedVariables.isEmpty() && realLogin && scores[loginIndex] >= 15 && responseEvidence && (verifyIndex != null || changedCookies.isNotEmpty() || bindings.isNotEmpty()) -> "HIGH"
             scores[loginIndex] >= 8 -> "MEDIUM"
             else -> "LOW"
         }
@@ -108,6 +113,8 @@ internal object UniversalAuthAnalyzer {
         if (login.event.optBoolean("_authFormCorrelated", false)) notes.add("DOM form submit was correlated with the real network request")
         if (verifyIndex != null) notes.add("Session verification candidate: ${nodes[verifyIndex].method} ${nodes[verifyIndex].url}")
         if (bindings.isNotEmpty()) notes.add("Detected ${bindings.size} response → request dependencies")
+        if (authEndIndex < nodes.lastIndex) notes.add("AUTH boundary stopped at logout/sign-out; later requests were excluded")
+        if (unresolvedVariables.isNotEmpty()) notes.add("UNRESOLVED dynamic dependencies: ${unresolvedVariables.joinToString(", ")}")
         if (changedCookies.isNotEmpty()) notes.add("Cookies changed: ${changedCookies.joinToString(", ")}")
         if (changedStorage.isNotEmpty()) notes.add("Browser storage changed: ${changedStorage.joinToString(", ")}")
         if (!responseEvidence) notes.add("The selected login request has no captured HTTP response")
@@ -326,7 +333,8 @@ internal object UniversalAuthAnalyzer {
         nodes: List<Node>,
         producers: List<Producer>,
         selected: MutableSet<Int>,
-        origins: Set<String>
+        origins: Set<String>,
+        endIndex: Int
     ): Pair<MutableList<Binding>, LinkedHashSet<String>> {
         val bindings = mutableListOf<Binding>()
         val usedVariables = linkedSetOf<String>()
@@ -337,11 +345,11 @@ internal object UniversalAuthAnalyzer {
         while (changed && pass++ < 40) {
             changed = false
 
-            selected.toList().sorted().forEach { consumer ->
+            selected.toList().sorted().filter { it <= endIndex }.forEach { consumer ->
                 val material = requestMaterial(nodes[consumer].event)
                 val candidates = producers.asSequence()
-                    .filter { it.index < consumer && reusable(it.value) && containsMaterial(material, it.value) }
-                    .filter { it.index < 0 || !isNoise(nodes[it.index], origins) }
+                    .filter { it.index < consumer && it.index <= endIndex && reusable(it.value) && containsMaterial(material, it.value) }
+                    .filter { it.index < 0 || !isNoise(nodes[it.index], origins) || it.kind in setOf("redirect", "html-redirect", "html-query") }
                     .groupBy { it.value }
 
                 candidates.values.forEach { options ->
@@ -357,26 +365,29 @@ internal object UniversalAuthAnalyzer {
                     }
                     if (producer.index >= 0 && selected.add(producer.index)) changed = true
                 }
+
+                val navigationSource = findPreviousNavigationSource(nodes, consumer, origins, endIndex)
+                if (navigationSource != null && selected.add(navigationSource)) changed = true
             }
 
-            selected.toList().sorted().forEach { sourceIndex ->
+            selected.toList().sorted().filter { it <= endIndex }.forEach { sourceIndex ->
                 val source = nodes[sourceIndex]
                 val limitTime = if (source.time > 0L) source.time + 120_000L else Long.MAX_VALUE
 
                 producers.asSequence()
                     .filter { it.index == sourceIndex && reusable(it.value) }
                     .forEach { producer ->
-                        for (index in sourceIndex + 1..nodes.lastIndex) {
+                        for (index in sourceIndex + 1..minOf(nodes.lastIndex, endIndex)) {
                             val candidate = nodes[index]
                             if (candidate.time > 0L && candidate.time > limitTime) break
-                            if (isNoise(candidate, origins) || !isExplicitAuthStep(candidate)) continue
+                            if ((isNoise(candidate, origins) && !isNavigationCarrier(candidate)) || !isExplicitAuthStep(candidate)) continue
                             if (containsMaterial(requestMaterial(candidate.event), producer.value) || stepTransitionMatches(producer, candidate)) {
                                 if (selected.add(index)) changed = true
                             }
                         }
                     }
 
-                val navigationIndex = findNextNavigationTarget(nodes, sourceIndex, navigationTargets(source), origins)
+                val navigationIndex = findNextNavigationTarget(nodes, sourceIndex, navigationTargets(source), origins, endIndex)
                 if (navigationIndex != null && selected.add(navigationIndex)) changed = true
             }
         }
@@ -393,7 +404,40 @@ internal object UniversalAuthAnalyzer {
         return route.contains(value) || value.contains(route.takeIf { it.length >= 6 } ?: return false)
     }
 
-    private fun findNextNavigationTarget(nodes: List<Node>, sourceIndex: Int, targets: List<String>, origins: Set<String>): Int? {
+    private fun authBoundary(nodes: List<Node>, loginIndex: Int): Int {
+        if (loginIndex >= nodes.lastIndex) return nodes.lastIndex
+        for (index in loginIndex + 1..nodes.lastIndex) {
+            if (isLogoutUrl(nodes[index].url)) return maxOf(loginIndex, index - 1)
+        }
+        return nodes.lastIndex
+    }
+
+    private fun findPreviousNavigationSource(nodes: List<Node>, consumerIndex: Int, origins: Set<String>, endIndex: Int): Int? {
+        if (consumerIndex <= 0 || consumerIndex > endIndex) return null
+        val target = nodes[consumerIndex].url
+        for (index in consumerIndex - 1 downTo 0) {
+            val source = nodes[index]
+            if (isStatic(source) || isLogoutUrl(source.url)) continue
+            if (!documentLike(source) && navigationTargets(source).isEmpty()) continue
+            val direct = navigationTargets(source).any { navigationTargetMatches(it, target) }
+            val referenced = responseReferencesTarget(source, target)
+            if (!direct && !referenced) continue
+            val sourceOrigin = origin(source.url)
+            if (sourceOrigin.isNotBlank() && sourceOrigin !in origins && !isCrossOriginAuthBridge(source) && !direct && !referenced) continue
+            return index
+        }
+        return null
+    }
+
+    private fun responseReferencesTarget(source: Node, target: String): Boolean {
+        val body = responseBody(source.event)
+        if (body.isBlank() || body.length > 2_000_000 || target.isBlank()) return false
+        val normalized = body.replace("&amp;", "&").replace("&#38;", "&").replace("\\u0026", "&").replace("\\/", "/")
+        if (normalized.contains(target)) return true
+        val route = routeKey(target)
+        return route.isNotBlank() && normalized.contains(route)
+    }
+    private fun findNextNavigationTarget(nodes: List<Node>, sourceIndex: Int, targets: List<String>, origins: Set<String>, endIndex: Int): Int? {
         if (targets.isEmpty()) return null
         val source = nodes[sourceIndex]
         val sourceTime = source.time
@@ -404,13 +448,14 @@ internal object UniversalAuthAnalyzer {
         var bestOrderDistance = Int.MAX_VALUE
         var bestTimeDistance = Long.MAX_VALUE
 
-        nodes.indices.forEach { index ->
+        (0..minOf(nodes.lastIndex, endIndex)).forEach { index ->
             if (index == sourceIndex) return@forEach
             val candidate = nodes[index]
             val candidateOrder = candidate.event.optInt("_authOrderLast", candidate.event.optInt("_authOrder", -1))
             if (sourceOrder >= 0 && candidateOrder >= 0 && candidateOrder <= sourceOrder) return@forEach
             if (candidate.time > 0L && (candidate.time < minTime || candidate.time > maxTime)) return@forEach
-            if (isStatic(candidate) || isTelemetry(candidate) || logoutOrRegistration(candidate.url)) return@forEach
+            if (isStatic(candidate) || isLogoutUrl(candidate.url)) return@forEach
+            if (isTelemetry(candidate) && !isNavigationCarrier(candidate)) return@forEach
             if (targets.none { target -> navigationTargetMatches(target, candidate.url) }) return@forEach
 
             val orderDistance = if (sourceOrder >= 0 && candidateOrder >= 0) candidateOrder - sourceOrder else Int.MAX_VALUE
@@ -584,6 +629,7 @@ internal object UniversalAuthAnalyzer {
 
             if (body.length <= 50_000) {
                 Regex("(?i)(?:window\\.)?location(?:\\.href)?\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { add(it.groupValues[1]) }
+                Regex("(?i)(?:window\\.)?location\\.(?:replace|assign)\\s*\\(\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { add(it.groupValues[1]) }
                 Regex("(?i)\\b(?:redirect|next|return|continue)[A-Za-z0-9_]*URL\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { add(it.groupValues[1]) }
             }
         }
@@ -626,6 +672,17 @@ internal object UniversalAuthAnalyzer {
         }
     }
 
+    private fun collectHtmlUrlProducers(body: String, index: Int, out: MutableList<Producer>) {
+        Regex("https?://[^\\s\\\"'<>]+", RegexOption.IGNORE_CASE).findAll(body).take(300).forEach { match ->
+            val raw = match.value.trimEnd(')', ']', '}', ',', ';')
+            val url = try { URL(raw) } catch (_: Exception) { return@forEach }
+            parseUrlEncoded(url.query.orEmpty()).forEach { (key, value) ->
+                val normalized = normalizeField(key)
+                val dynamicKey = interestingKey(key) || credentialKind(key) != null || normalized.contains("state") || normalized.contains("challenge") || normalized.contains("verifier")
+                if (dynamicKey && reusable(value)) out.add(Producer(index, key, value, "html-query", header = key))
+            }
+        }
+    }
     private fun collectProducers(nodes: List<Node>, hints: List<Hint>): List<Producer> {
         val out = mutableListOf<Producer>()
         hints.forEach { hint ->
@@ -655,6 +712,13 @@ internal object UniversalAuthAnalyzer {
                     }
                 }
 
+                val normalizedHtml = body.replace("&amp;", "&").replace("&#38;", "&").replace("\\u0026", "&").replace("\\/", "/")
+                Regex("(?i)[\\\"']?([A-Za-z_$][A-Za-z0-9_.$-]{1,80})[\\\"']?\\s*:\\s*[\\\"']([^\\\"']{4,4096})[\\\"']").findAll(normalizedHtml).take(500).forEach { match ->
+                    val key = match.groupValues[1]
+                    val value = match.groupValues[2]
+                    if (interestingKey(key) || tokenLike(value)) out.add(Producer(index, key, value, "html-js"))
+                }
+                collectHtmlUrlProducers(normalizedHtml, index, out)
                 Regex("<meta\\b[^>]*>", RegexOption.IGNORE_CASE).findAll(body).take(100).forEach { match ->
                     val attrs = htmlAttributes(match.value)
                     if (!attrs["http-equiv"].orEmpty().equals("refresh", true)) return@forEach
@@ -787,7 +851,7 @@ internal object UniversalAuthAnalyzer {
     private fun isPasswordField(key: String): Boolean { val value = normalizeField(key); return value in setOf("password", "pass", "passwd", "pwd", "passcode") || value.endsWith("_password") || value.endsWith("_passwd") }
     private fun isOtpField(key: String): Boolean { val value = normalizeField(key); return value in setOf("otp", "totp", "one_time_password", "verification_code", "sms_code", "pin", "mfa_code", "2fa_code") || value.endsWith("_otp") || (value.endsWith("_code") && !value.contains("status") && !value.contains("error")) }
     private fun isCsrfField(key: String): Boolean { val value = normalizeField(key); return value.contains("csrf") || value.contains("xsrf") || value in setOf("_token", "authenticity_token", "requestverificationtoken", "sessid", "nonce", "state") }
-    private fun interestingKey(key: String): Boolean { val value = normalizeField(key); return value.contains("token") || value.contains("csrf") || value.contains("xsrf") || value.contains("session") || value.contains("nonce") || value in setOf("jwt", "authorization", "code", "state", "sessid") }
+    private fun interestingKey(key: String): Boolean { val value = normalizeField(key); return value.contains("token") || value.contains("csrf") || value.contains("xsrf") || value.contains("session") || value.contains("nonce") || value.contains("state") || value.contains("challenge") || value.contains("verifier") || (value.contains("flow") && value.contains("id")) || value in setOf("jwt", "authorization", "code", "state", "sessid", "sid", "hash", "uuid") }
 
     private fun responseTokenKeys(event: JSONObject): List<String> {
         val body = responseBody(event).trim()
@@ -802,7 +866,30 @@ internal object UniversalAuthAnalyzer {
         }
     }
 
-    private fun addAuthHeaderVariables(nodes: List<Node>, selected: Set<Int>, replacements: MutableMap<String, String>, variables: MutableMap<String, VariableDef>, used: MutableSet<String>) {
+    private fun addUnresolvedDynamicVariables(
+        nodes: List<Node>,
+        selected: Set<Int>,
+        replacements: MutableMap<String, String>,
+        variables: MutableMap<String, VariableDef>,
+        used: MutableSet<String>,
+        unresolved: MutableSet<String>
+    ) {
+        selected.sorted().forEach { index ->
+            fields(nodes[index].event).forEach { (key, raw) ->
+                if (raw.isBlank() || raw in setOf("[password]", "[file]", "[unavailable]") || replacements.containsKey(raw)) return@forEach
+                val kind = credentialKind(key)
+                if (kind in setOf("login", "password", "otp")) return@forEach
+                if (kind == null && !interestingKey(key) && !tokenLike(raw)) return@forEach
+                val base = when (kind) { "csrf" -> "csrf_token"; null -> canonicalVariable(key); else -> kind }
+                val variable = uniqueVariable(base, used)
+                used.add(variable)
+                replacements[raw] = variable
+                variables[variable] = VariableDef(variable, "", "UNRESOLVED dynamic AUTH dependency; no earlier producer was captured")
+                unresolved.add(variable)
+            }
+        }
+    }
+    private fun addAuthHeaderVariables(nodes: List<Node>, selected: Set<Int>, replacements: MutableMap<String, String>, variables: MutableMap<String, VariableDef>, used: MutableSet<String>, unresolved: MutableSet<String>) {
         selected.forEach { index -> requestHeaders(nodes[index].event).forEach { (name, value) ->
             val lower = name.lowercase(Locale.US)
             val pair = when {
@@ -813,11 +900,11 @@ internal object UniversalAuthAnalyzer {
                 else -> null
             } ?: return@forEach
             if (pair.second.isBlank() || replacements.containsKey(pair.second)) return@forEach
-            val variable = uniqueVariable(pair.first, used); used.add(variable); replacements[pair.second] = variable; variables[variable] = VariableDef(variable, pair.second, "Captured authentication header fallback")
+            val variable = uniqueVariable(pair.first, used); used.add(variable); replacements[pair.second] = variable; variables[variable] = VariableDef(variable, "", "UNRESOLVED captured authentication header; no earlier producer was captured"); unresolved.add(variable)
         } }
     }
 
-    private fun addUsedStorageVariables(nodes: List<Node>, selected: Set<Int>, before: AuthFlowAnalyzer.BrowserState, after: AuthFlowAnalyzer.BrowserState, replacements: MutableMap<String, String>, variables: MutableMap<String, VariableDef>, used: MutableSet<String>) {
+    private fun addUsedStorageVariables(nodes: List<Node>, selected: Set<Int>, before: AuthFlowAnalyzer.BrowserState, after: AuthFlowAnalyzer.BrowserState, replacements: MutableMap<String, String>, variables: MutableMap<String, VariableDef>, used: MutableSet<String>, unresolved: MutableSet<String>) {
         val material = selected.joinToString("\n") { requestMaterial(nodes[it].event) }
         listOf(after.localStorage, after.sessionStorage).forEach { store ->
             val keys = store.keys()
@@ -826,7 +913,7 @@ internal object UniversalAuthAnalyzer {
                 if (!reusable(value) || replacements.containsKey(value) || (!containsMaterial(material, value) && !interestingKey(key))) continue
                 val old = before.localStorage.optString(key, before.sessionStorage.optString(key, ""))
                 if (old == value && !containsMaterial(material, value)) continue
-                val variable = uniqueVariable(canonicalVariable(key), used); used.add(variable); replacements[value] = variable; variables[variable] = VariableDef(variable, value, "Captured browser-storage authentication value fallback")
+                val variable = uniqueVariable(canonicalVariable(key), used); used.add(variable); replacements[value] = variable; variables[variable] = VariableDef(variable, "", "UNRESOLVED browser-storage authentication value; no earlier producer was captured"); unresolved.add(variable)
             }
         }
     }
@@ -903,7 +990,23 @@ internal object UniversalAuthAnalyzer {
                     lines.add("  if (raw) { raw = raw.replace(/&amp;/g, '&').replace(/&#38;/g, '&'); pm.collectionVariables.set($variable, new URL(raw, pm.request.url.toString()).toString()); }")
                     lines.add("} catch (e) {}")
                 }
-                "html" -> {
+                "html-js" -> {
+                    lines.add("try {")
+                    lines.add("  const text = pm.response.text();")
+                    lines.add("  const key = ${JSONObject.quote(binding.producer.key)};")
+                    lines.add("  const safe = key.replace(/[^A-Za-z0-9_.$-]/g, '');")
+                    lines.add("  const re = new RegExp('(?:[\\\"\\\']?' + safe + '[\\\"\\\']?\\\\s*:\\s*[\\\"\\\'])([^\\\"\\\']+)', 'i');")
+                    lines.add("  const match = text.match(re); if (match && match[1]) pm.collectionVariables.set($variable, match[1]);")
+                    lines.add("} catch (e) {}")
+                }
+                "html-query" -> {
+                    lines.add("try {")
+                    lines.add("  const text = pm.response.text().replace(/&amp;/g, '&').replace(/&#38;/g, '&').replace(/\\\\u0026/g, '&').replace(/\\\\\\\\\//g, '/');")
+                    lines.add("  const key = ${JSONObject.quote(binding.producer.header.ifBlank { binding.producer.key })};")
+                    lines.add("  const marker = key + '='; const pos = text.indexOf(marker);")
+                    lines.add("  if (pos >= 0) { const tail = text.substring(pos + marker.length); const raw = tail.split(/[&#\\\"'\\\\s<>]/)[0]; if (raw) pm.collectionVariables.set($variable, decodeURIComponent(raw)); }")
+                    lines.add("} catch (e) {}")
+                }                "html" -> {
                     lines.add("try {")
                     lines.add("  const text = pm.response.text();")
                     lines.add("  const key = ${JSONObject.quote(binding.producer.key)};")
@@ -948,7 +1051,7 @@ internal object UniversalAuthAnalyzer {
 
     private fun isNoise(node: Node, origins: Set<String>): Boolean {
         if (isStatic(node)) return true
-        if (isTelemetry(node)) return true
+        if (isTelemetry(node) && !isNavigationCarrier(node)) return true
         val nodeOrigin = origin(node.url)
         if (nodeOrigin.isNotBlank() && nodeOrigin !in origins && !isCrossOriginAuthBridge(node)) return true
         return false
@@ -967,6 +1070,17 @@ internal object UniversalAuthAnalyzer {
             node.event.optBoolean("_authPageSourceAttached", false) ||
             (node.method == "GET" && NetworkEventClassifier.responseKind(node.event) == "HTML")
 
+    private fun isNavigationCarrier(node: Node): Boolean {
+        if (documentLike(node)) return true
+        if (node.event.optString("redirectURL", "").isNotBlank()) return true
+        if (responseHeaders(node.event).any { it.first.equals("Location", true) && it.second.isNotBlank() }) return true
+        return navigationTargets(node).isNotEmpty()
+    }
+
+    private fun isLogoutUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.US)
+        return listOf("logout", "signout", "sign-out", "cgi-bin/logout").any(lower::contains)
+    }
     private fun isTelemetry(node: Node): Boolean {
         if (node.source == "beacon") return true
         val lower = node.url.lowercase(Locale.US)
