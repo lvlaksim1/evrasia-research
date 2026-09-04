@@ -395,27 +395,38 @@ internal object UniversalAuthAnalyzer {
 
     private fun findNextNavigationTarget(nodes: List<Node>, sourceIndex: Int, targets: List<String>, origins: Set<String>): Int? {
         if (targets.isEmpty()) return null
-        val sourceTime = nodes[sourceIndex].time
+        val source = nodes[sourceIndex]
+        val sourceTime = source.time
+        val sourceOrder = source.event.optInt("_authOrderLast", source.event.optInt("_authOrder", -1))
         val minTime = if (sourceTime > 0L) sourceTime - 2_000L else Long.MIN_VALUE
         val maxTime = if (sourceTime > 0L) sourceTime + 120_000L else Long.MAX_VALUE
         var best: Int? = null
-        var bestDistance = Long.MAX_VALUE
+        var bestOrderDistance = Int.MAX_VALUE
+        var bestTimeDistance = Long.MAX_VALUE
 
         nodes.indices.forEach { index ->
             if (index == sourceIndex) return@forEach
             val candidate = nodes[index]
+            val candidateOrder = candidate.event.optInt("_authOrderLast", candidate.event.optInt("_authOrder", -1))
+            if (sourceOrder >= 0 && candidateOrder >= 0 && candidateOrder <= sourceOrder) return@forEach
             if (candidate.time > 0L && (candidate.time < minTime || candidate.time > maxTime)) return@forEach
             if (isStatic(candidate) || isTelemetry(candidate) || logoutOrRegistration(candidate.url)) return@forEach
             if (targets.none { target -> navigationTargetMatches(target, candidate.url) }) return@forEach
 
-            val distance = if (sourceTime > 0L && candidate.time > 0L) {
+            val orderDistance = if (sourceOrder >= 0 && candidateOrder >= 0) candidateOrder - sourceOrder else Int.MAX_VALUE
+            val timeDistance = if (sourceTime > 0L && candidate.time > 0L) {
                 val delta = candidate.time - sourceTime
                 if (delta >= 0L) delta else 2_000L + -delta
             } else {
                 kotlin.math.abs(index - sourceIndex).toLong()
             }
-            if (distance < bestDistance) {
-                bestDistance = distance
+
+            if (
+                orderDistance < bestOrderDistance ||
+                (orderDistance == bestOrderDistance && timeDistance < bestTimeDistance)
+            ) {
+                bestOrderDistance = orderDistance
+                bestTimeDistance = timeDistance
                 best = index
             }
         }
