@@ -193,8 +193,9 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         }
         addControl(recordButton)
         addControl(chromeButton("⌫", "Очистить журнал") {
-            NetworkDebugStore.clear()
+            if (!NetworkRequestActions.clearFullSession(this)) NetworkDebugStore.clear()
             refreshIncremental(force = true)
+            Toast.makeText(this, "Журнал и данные текущего ZIP очищены", Toast.LENGTH_SHORT).show()
         })
         menuButton = chromeButton("☰", "Меню") { showNetworkMenu(it) }
         controls.addView(menuButton, LinearLayout.LayoutParams(dp(44), dp(44)))
