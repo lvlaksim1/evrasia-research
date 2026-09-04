@@ -246,7 +246,8 @@ internal object UniversalAuthAnalyzer {
         if (node.event.optBoolean("_authFormCorrelated", false)) return true
         if (logoutOrRegistration(node.url) || isStatic(node)) return false
         if (authPath(node.url)) return true
-        if (hasCredentials(node.event)) return true
+        val kinds = fields(node.event).keys.mapNotNull(::credentialKind).toSet()
+        if (kinds.any { it in setOf("login", "password", "otp", "code_verifier", "code_challenge") }) return true
         if (looksRefresh(node)) return true
         if (responseTokenKeys(node.event).isNotEmpty()) return true
         val lower = node.url.lowercase(Locale.US)
