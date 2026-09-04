@@ -44,6 +44,13 @@ internal object UniversalAuthAnalyzer {
         val bindings = causal.first
         val usedVariables = causal.second
         selected.removeAll { it > authEndIndex }
+        val stableEndIndex = stableAuthenticatedBoundary(nodes, selected, loginIndex, authEndIndex)
+        if (stableEndIndex != null) {
+            selected.removeAll { it > stableEndIndex }
+            bindings.removeAll { binding ->
+                binding.consumer > stableEndIndex || binding.producer.index > stableEndIndex
+            }
+        }
 
         val verifyIndex: Int? = null
 
@@ -92,7 +99,7 @@ internal object UniversalAuthAnalyzer {
             val item = JSONObject()
                 .put("name", "%02d %s · %s %s".format(Locale.US, sequence++, role(index, loginIndex, verifyIndex, node), node.method, compact(node.url)))
                 .put("request", request)
-            if (node.event.optString("redirectURL", "").isNotBlank() || responseHeaders(node.event).any { it.first.equals("Location", true) && it.second.isNotBlank() }) {
+            if (node.event.optString("redirectURL", "").isNotBlank() || node.event.optString("_authObservedRedirect", "").isNotBlank() || responseHeaders(node.event).any { it.first.equals("Location", true) && it.second.isNotBlank() }) {
                 item.put("protocolProfileBehavior", JSONObject().put("followRedirects", false))
             }
             buildResponse(node.event, request)?.let { item.put("response", JSONArray().put(it)) }
@@ -169,6 +176,8 @@ internal object UniversalAuthAnalyzer {
             .sortedBy { it.optLong("time", 0L) }
             .toMutableList()
 
+        attachReplayRedirectEvidence(real)
+
         events.withIndex().filter { it.value.optString("source", "") == "auth-page-source" }.forEach { entry ->
             val page = entry.value
             val pageOrder = entry.index
@@ -241,6 +250,37 @@ internal object UniversalAuthAnalyzer {
         return real.sortedBy { it.optLong("time", 0L) }.map { event ->
             Node(event, event.optString("source", ""), NetworkEventClassifier.methodOf(event).ifBlank { event.optString("method", "GET") }.uppercase(Locale.US), event.optString("url", ""), event.optLong("time", 0L))
         } to hints
+    }
+
+    private fun attachReplayRedirectEvidence(events: MutableList<JSONObject>) {
+        events.withIndex()
+            .filter { entry ->
+                val event = entry.value
+                event.optString("source", "") == "resource-copy" &&
+                    event.optString("redirectURL", "").isNotBlank() &&
+                    event.optString("url", "").startsWith("http")
+            }
+            .forEach { evidence ->
+                val event = evidence.value
+                val url = normalizeUrl(event.optString("url", ""))
+                val time = event.optLong("time", 0L)
+                val candidate = events.withIndex()
+                    .asSequence()
+                    .filter { it.index < evidence.index }
+                    .filter { entry ->
+                        val source = entry.value.optString("source", "")
+                        val method = NetworkEventClassifier.methodOf(entry.value).ifBlank { entry.value.optString("method", "GET") }
+                        val candidateTime = entry.value.optLong("time", 0L)
+                        source != "resource-copy" &&
+                            method.equals("GET", true) &&
+                            normalizeUrl(entry.value.optString("url", "")) == url &&
+                            (time <= 0L || candidateTime <= 0L || time - candidateTime in 0L..60_000L)
+                    }
+                    .maxByOrNull { it.value.optLong("time", 0L) }
+                    ?.value
+                    ?: return@forEach
+                candidate.put("_authObservedRedirect", event.optString("redirectURL", ""))
+            }
     }
 
     private fun correlationScore(hint: Hint, event: JSONObject): Int {
@@ -342,9 +382,15 @@ internal object UniversalAuthAnalyzer {
         val bindings = mutableListOf<Binding>()
         val usedVariables = linkedSetOf<String>()
         val variableByValue = linkedMapOf<String, String>()
+        val requestMaterialCache = Array(nodes.size) { index -> requestMaterial(nodes[index].event) }
         val navigationCache = Array(nodes.size) { index ->
             if (isStatic(nodes[index])) emptyList() else navigationTargets(nodes[index])
         }
+        val producersByIndex = producers.groupBy { it.index }
+        val consumerProducerCache = mutableMapOf<Int, List<Producer>>()
+        val forwardSelectionCache = mutableMapOf<Int, List<Int>>()
+        val previousNavigationCache = IntArray(nodes.size) { -2 }
+        val nextNavigationCache = IntArray(nodes.size) { -2 }
         var changed = true
         var pass = 0
 
@@ -352,14 +398,18 @@ internal object UniversalAuthAnalyzer {
             changed = false
 
             selected.toList().sorted().filter { it <= endIndex }.forEach { consumer ->
-                val material = requestMaterial(nodes[consumer].event)
-                val candidates = producers.asSequence()
-                    .filter { it.index < consumer && it.index <= endIndex && reusable(it.value) && containsMaterial(material, it.value) }
-                    .filter { it.index < 0 || !isNoise(nodes[it.index], origins) || it.kind in setOf("redirect", "html-redirect", "html-query") }
-                    .groupBy { it.value }
+                val candidates = consumerProducerCache.getOrPut(consumer) {
+                    producers.asSequence()
+                        .filter { it.index < consumer && it.index <= endIndex && reusable(it.value) }
+                        .filter { it.index < 0 || !isStatic(nodes[it.index]) }
+                        .filter { it.index < 0 || !isNoise(nodes[it.index], origins) || it.kind in setOf("redirect", "html-redirect", "html-query") }
+                        .filter { containsMaterial(requestMaterialCache[consumer], it.value) }
+                        .groupBy { it.value }
+                        .values
+                        .mapNotNull { options -> options.maxByOrNull { it.index } }
+                }
 
-                candidates.values.forEach { options ->
-                    val producer = options.maxByOrNull { it.index } ?: return@forEach
+                candidates.forEach { producer ->
                     if (bindings.none { it.consumer == consumer && it.producer.value == producer.value }) {
                         val variable = variableByValue[producer.value] ?: run {
                             val created = uniqueVariable(canonicalVariable(producer.key), usedVariables)
@@ -372,7 +422,14 @@ internal object UniversalAuthAnalyzer {
                     if (producer.index >= 0 && selected.add(producer.index)) changed = true
                 }
 
-                val navigationSource = findPreviousNavigationSource(nodes, navigationCache, consumer, origins, endIndex)
+                val navigationSource = previousNavigationCache[consumer].let { cached ->
+                    if (cached >= -1) cached.takeIf { it >= 0 }
+                    else {
+                        val found = findPreviousNavigationSource(nodes, navigationCache, consumer, origins, endIndex)
+                        previousNavigationCache[consumer] = found ?: -1
+                        found
+                    }
+                }
                 if (navigationSource != null) {
                     val navigationProducer = navigationBindingProducer(nodes[navigationSource], navigationCache[navigationSource], navigationSource, nodes[consumer].url)
                     if (navigationProducer != null && bindings.none { it.consumer == consumer && it.producer.kind == navigationProducer.kind && it.producer.index == navigationSource }) {
@@ -390,22 +447,32 @@ internal object UniversalAuthAnalyzer {
 
             selected.toList().sorted().filter { it <= endIndex }.forEach { sourceIndex ->
                 val source = nodes[sourceIndex]
-                val limitTime = if (source.time > 0L) source.time + 120_000L else Long.MAX_VALUE
-
-                producers.asSequence()
-                    .filter { it.index == sourceIndex && reusable(it.value) }
-                    .forEach { producer ->
-                        for (index in sourceIndex + 1..minOf(nodes.lastIndex, endIndex)) {
-                            val candidate = nodes[index]
-                            if (candidate.time > 0L && candidate.time > limitTime) break
-                            if ((isNoise(candidate, origins) && navigationCache[index].isEmpty()) || !isExplicitAuthStep(candidate)) continue
-                            if (containsMaterial(requestMaterial(candidate.event), producer.value) || stepTransitionMatches(producer, candidate)) {
-                                if (selected.add(index)) changed = true
+                val forward = forwardSelectionCache.getOrPut(sourceIndex) {
+                    val out = linkedSetOf<Int>()
+                    val limitTime = if (source.time > 0L) source.time + 120_000L else Long.MAX_VALUE
+                    producersByIndex[sourceIndex].orEmpty()
+                        .asSequence()
+                        .filter { reusable(it.value) }
+                        .forEach { producer ->
+                            for (index in sourceIndex + 1..minOf(nodes.lastIndex, endIndex)) {
+                                val candidate = nodes[index]
+                                if (candidate.time > 0L && candidate.time > limitTime) break
+                                if ((isNoise(candidate, origins) && navigationCache[index].isEmpty()) || !isExplicitAuthStep(candidate)) continue
+                                if (containsMaterial(requestMaterialCache[index], producer.value) || stepTransitionMatches(producer, candidate)) out.add(index)
                             }
                         }
-                    }
+                    out.toList()
+                }
+                forward.forEach { index -> if (selected.add(index)) changed = true }
 
-                val navigationIndex = findNextNavigationTarget(nodes, sourceIndex, navigationCache[sourceIndex], origins, endIndex)
+                val navigationIndex = nextNavigationCache[sourceIndex].let { cached ->
+                    if (cached >= -1) cached.takeIf { it >= 0 }
+                    else {
+                        val found = findNextNavigationTarget(nodes, navigationCache, sourceIndex, navigationCache[sourceIndex], origins, endIndex)
+                        nextNavigationCache[sourceIndex] = found ?: -1
+                        found
+                    }
+                }
                 if (navigationIndex != null && selected.add(navigationIndex)) changed = true
             }
         }
@@ -428,6 +495,21 @@ internal object UniversalAuthAnalyzer {
             if (isLogoutUrl(nodes[index].url)) return maxOf(loginIndex, index - 1)
         }
         return nodes.lastIndex
+    }
+
+    private fun stableAuthenticatedBoundary(nodes: List<Node>, selected: Set<Int>, loginIndex: Int, authEndIndex: Int): Int? {
+        if (authEndIndex >= nodes.lastIndex) return null
+        return selected.asSequence()
+            .filter { it in (loginIndex + 1)..authEndIndex }
+            .filter { index ->
+                val node = nodes[index]
+                documentLike(node) &&
+                    !isStatic(node) &&
+                    !isTelemetry(node) &&
+                    !authPath(node.url) &&
+                    !logoutOrRegistration(node.url)
+            }
+            .maxOrNull()
     }
 
     private fun findPreviousNavigationSource(
@@ -457,6 +539,8 @@ internal object UniversalAuthAnalyzer {
         if (target.isBlank()) return null
         val capturedRedirect = source.event.optString("redirectURL", "")
         if (capturedRedirect.isNotBlank() && navigationTargetMatches(capturedRedirect, target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
+        val observedRedirect = source.event.optString("_authObservedRedirect", "")
+        if (observedRedirect.isNotBlank() && navigationTargetMatches(observedRedirect, target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
         val location = responseHeaders(source.event).firstOrNull { it.first.equals("Location", true) && it.second.isNotBlank() }?.second.orEmpty()
         if (location.isNotBlank() && navigationTargetMatches(resolveNavigationUrl(source.url, location).orEmpty(), target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
         if (targets.any { navigationTargetMatches(it, target) }) return Producer(index, "redirect_url", target, "html-redirect")
@@ -470,7 +554,7 @@ internal object UniversalAuthAnalyzer {
         val route = routeKey(target)
         return route.isNotBlank() && normalized.contains(route)
     }
-    private fun findNextNavigationTarget(nodes: List<Node>, sourceIndex: Int, targets: List<String>, origins: Set<String>, endIndex: Int): Int? {
+    private fun findNextNavigationTarget(nodes: List<Node>, navigationCache: Array<List<String>>, sourceIndex: Int, targets: List<String>, origins: Set<String>, endIndex: Int): Int? {
         if (targets.isEmpty()) return null
         val source = nodes[sourceIndex]
         val sourceTime = source.time
@@ -488,7 +572,7 @@ internal object UniversalAuthAnalyzer {
             if (sourceOrder >= 0 && candidateOrder >= 0 && candidateOrder <= sourceOrder) return@forEach
             if (candidate.time > 0L && (candidate.time < minTime || candidate.time > maxTime)) return@forEach
             if (isStatic(candidate) || isLogoutUrl(candidate.url)) return@forEach
-            if (isTelemetry(candidate) && !isNavigationCarrier(candidate)) return@forEach
+            if (isTelemetry(candidate) && navigationCache[index].isEmpty()) return@forEach
             if (targets.none { target -> navigationTargetMatches(target, candidate.url) }) return@forEach
 
             val orderDistance = if (sourceOrder >= 0 && candidateOrder >= 0) candidateOrder - sourceOrder else Int.MAX_VALUE
@@ -641,6 +725,7 @@ internal object UniversalAuthAnalyzer {
         }
 
         node.event.optString("redirectURL", "").takeIf { it.isNotBlank() }?.let(::add)
+        node.event.optString("_authObservedRedirect", "").takeIf { it.isNotBlank() }?.let(::add)
         responseHeaders(node.event).firstOrNull { it.first.equals("Location", true) }?.second?.let(::add)
 
         val body = responseBody(node.event)
@@ -650,11 +735,6 @@ internal object UniversalAuthAnalyzer {
                     val parsed: Any = if (body.trimStart().startsWith("{")) JSONObject(body) else JSONArray(body)
                     collectNavigationJson(parsed, node.url, out)
                 } catch (_: Exception) {}
-            }
-
-            val normalizedBody = body.replace("&amp;", "&").replace("&#38;", "&").replace("\\u0026", "&").replace("\\/", "/")
-            Regex("https?://[^\\s\\\"'<>]+", RegexOption.IGNORE_CASE).findAll(normalizedBody).take(400).forEach { match ->
-                add(match.value.trimEnd(')', ']', '}', ',', ';'))
             }
 
             Regex("<meta\\b[^>]*>", RegexOption.IGNORE_CASE).findAll(body).take(100).forEach { match ->
@@ -1122,7 +1202,7 @@ internal object UniversalAuthAnalyzer {
 
     private fun isNavigationCarrier(node: Node): Boolean {
         if (documentLike(node)) return true
-        if (node.event.optString("redirectURL", "").isNotBlank()) return true
+        if (node.event.optString("redirectURL", "").isNotBlank() || node.event.optString("_authObservedRedirect", "").isNotBlank()) return true
         if (responseHeaders(node.event).any { it.first.equals("Location", true) && it.second.isNotBlank() }) return true
         return navigationTargets(node).isNotEmpty()
     }
