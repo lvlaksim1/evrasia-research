@@ -258,9 +258,33 @@ internal object UniversalAuthAnalyzer {
     private fun chooseVerify(nodes: List<Node>, loginIndex: Int, before: AuthFlowAnalyzer.BrowserState, after: AuthFlowAnalyzer.BrowserState, origins: Set<String>): Int? {
         if (loginIndex >= nodes.lastIndex) return null
         val finalUrl = normalizeUrl(after.url)
+        val limit = minOf(nodes.lastIndex, loginIndex + 30)
+
+        for (index in loginIndex + 1..limit) {
+            val node = nodes[index]
+            if (isNoise(node, origins) || isStatic(node)) continue
+            val status = node.event.optInt("status", 0)
+            val body = responseBody(node.event)
+            val sources = NetworkEventClassifier.eventSources(node.event)
+            val apiLike = sources.any { it in setOf("fetch", "xhr", "replay") }
+            val nonGet = node.method in setOf("POST", "PUT", "PATCH", "DELETE")
+            val usableBody = body.isNotBlank() && body !in setOf("[binary]", "[non-text response]", "[unavailable]")
+            if (
+                origin(node.url) in origins &&
+                apiLike &&
+                nonGet &&
+                status in 200..399 &&
+                usableBody &&
+                body.length >= 80 &&
+                !looksLikeLoginResponse(node.event, node.url) &&
+                !authPath(node.url)
+            ) {
+                return index
+            }
+        }
+
         var best: Int? = null
         var bestScore = Int.MIN_VALUE
-        val limit = minOf(nodes.lastIndex, loginIndex + 30)
         for (index in loginIndex + 1..limit) {
             val node = nodes[index]
             if (isNoise(node, origins) || isStatic(node)) continue
@@ -268,7 +292,8 @@ internal object UniversalAuthAnalyzer {
             val status = node.event.optInt("status", 0)
             val body = responseBody(node.event)
             val requestBody = node.event.optString("requestBody", "")
-            val apiLike = node.source in setOf("fetch", "xhr", "replay")
+            val sources = NetworkEventClassifier.eventSources(node.event)
+            val apiLike = sources.any { it in setOf("fetch", "xhr", "replay") }
             val nonGet = node.method in setOf("POST", "PUT", "PATCH", "DELETE")
 
             if (status in 200..399) value += 5
@@ -291,7 +316,7 @@ internal object UniversalAuthAnalyzer {
             if (authPath(node.url) && normalizeUrl(node.url) != finalUrl) value -= 5
             if (normalizeUrl(before.url) == normalizeUrl(node.url) && normalizeUrl(before.url) != finalUrl) value -= 3
 
-            if (value > bestScore || (value == bestScore && best != null && index > best)) {
+            if (value > bestScore || (value == bestScore && best != null && index < best)) {
                 bestScore = value
                 best = index
             }
