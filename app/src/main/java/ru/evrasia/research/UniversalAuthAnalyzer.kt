@@ -133,13 +133,35 @@ internal object UniversalAuthAnalyzer {
             Hint(JSONObject(event.toString()), event.optString("page", ""), event.optString("url", ""), event.optString("method", "POST").uppercase(Locale.US), event.optLong("time", 0L), hintFields(event))
         }.sortedBy { it.time }
 
-        val real = NetworkDisplayMerger.merge(events.map { JSONObject(it.toString()) })
+        val taggedEvents = events.mapIndexed { index, event ->
+            JSONObject(event.toString()).put("_authOrder", index)
+        }
+        val real = NetworkDisplayMerger.merge(taggedEvents)
             .filter { it.optString("source", "") != "auth-form-submit" && NetworkEventClassifier.isPlainRequestEvent(it) }
             .filter { it.optString("url", "").startsWith("http://") || it.optString("url", "").startsWith("https://") }
+            .onEach { event ->
+                var firstOrder = event.optInt("_authOrder", Int.MAX_VALUE)
+                var lastOrder = event.optInt("_authOrder", -1)
+                val merged = event.optJSONArray("_mergedEvents")
+                if (merged != null) {
+                    for (index in 0 until merged.length()) {
+                        val order = merged.optJSONObject(index)?.optInt("_authOrder", -1) ?: -1
+                        if (order >= 0) {
+                            if (order < firstOrder) firstOrder = order
+                            if (order > lastOrder) lastOrder = order
+                        }
+                    }
+                }
+                if (firstOrder == Int.MAX_VALUE) firstOrder = lastOrder
+                event.put("_authOrderFirst", firstOrder)
+                event.put("_authOrderLast", lastOrder)
+            }
             .sortedBy { it.optLong("time", 0L) }
             .toMutableList()
 
-        events.filter { it.optString("source", "") == "auth-page-source" }.forEach { page ->
+        events.withIndex().filter { it.value.optString("source", "") == "auth-page-source" }.forEach { entry ->
+            val page = entry.value
+            val pageOrder = entry.index
             val pageUrl = page.optString("url", "")
             val pageTime = page.optLong("time", 0L)
             val content = page.optString("content", "")
@@ -164,6 +186,10 @@ internal object UniversalAuthAnalyzer {
                 val target = candidate.value
                 target.put("_authPageSourceAttached", true)
                 target.put("_authPageSourceTime", pageTime)
+                val currentFirst = target.optInt("_authOrderFirst", pageOrder)
+                val currentLast = target.optInt("_authOrderLast", pageOrder)
+                target.put("_authOrderFirst", minOf(currentFirst, pageOrder))
+                target.put("_authOrderLast", maxOf(currentLast, pageOrder))
                 if (target.optString("responseBody", "").isBlank()) target.put("responseBody", content)
                 if (target.optString("mimeType", "").isBlank()) target.put("mimeType", "text/html; charset=utf-8")
             } else {
@@ -176,6 +202,9 @@ internal object UniversalAuthAnalyzer {
                         .put("status", 200)
                         .put("mimeType", "text/html; charset=utf-8")
                         .put("responseBody", content)
+                        .put("_authOrder", pageOrder)
+                        .put("_authOrderFirst", pageOrder)
+                        .put("_authOrderLast", pageOrder)
                         .put("_authPageSourceSynthetic", true)
                 )
             }
@@ -231,15 +260,15 @@ internal object UniversalAuthAnalyzer {
 
     private fun chooseLogin(nodes: List<Node>, scores: List<Int>): Int {
         val real = scores.indices.filter { !nodes[it].event.optBoolean("_authSynthetic", false) && !isTelemetry(nodes[it]) && !isStatic(nodes[it]) }
-        val password = real.filter { index -> fields(nodes[index].event).keys.any(::isPasswordField) }
+        val password = real.filter { index -> fields(nodes[index].event).any { (key, value) -> isPasswordField(key) && value.isNotBlank() } }
         if (password.isNotEmpty()) return password.maxByOrNull { scores[it] + if (nodes[it].event.optBoolean("_authFormCorrelated", false)) 8 else 0 } ?: password.first()
 
         val otp = real.filter { index -> fields(nodes[index].event).keys.any(::isOtpField) }
         if (otp.isNotEmpty()) return otp.maxByOrNull { scores[it] } ?: otp.first()
 
         val identity = real.filter { index ->
-            val keys = fields(nodes[index].event).keys
-            nodes[index].method in setOf("POST", "PUT", "PATCH") && keys.any(::isLoginField)
+            val values = fields(nodes[index].event)
+            nodes[index].method in setOf("POST", "PUT", "PATCH") && values.any { (key, value) -> isLoginField(key) && value.isNotBlank() }
         }
         if (identity.isNotEmpty()) return identity.maxByOrNull { scores[it] } ?: identity.first()
 
@@ -924,7 +953,8 @@ internal object UniversalAuthAnalyzer {
     private fun documentLike(node: Node): Boolean =
         node.source in setOf("navigation", "new-window", "auth-page-source") ||
             node.event.optBoolean("_authPageSourceSynthetic", false) ||
-            (node.method == "GET" && NetworkEventClassifier.responseKind(node.event) in setOf("HTML", "TEXT", "OTHER"))
+            node.event.optBoolean("_authPageSourceAttached", false) ||
+            (node.method == "GET" && NetworkEventClassifier.responseKind(node.event) == "HTML")
 
     private fun isTelemetry(node: Node): Boolean {
         if (node.source == "beacon") return true
