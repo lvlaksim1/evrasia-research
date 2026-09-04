@@ -1498,6 +1498,7 @@ internal object UniversalAuthAnalyzer {
             val wholeUrlResolved = replacements.containsKey(node.url)
             fields(node.event).forEach { (key, raw) ->
                 if (raw.isBlank() || raw in setOf("[password]", "[file]", "[unavailable]") || replacements.containsKey(raw)) return@forEach
+                if (replacements.keys.any { known -> known.length >= 4 && raw.contains(known) }) return@forEach
                 if (wholeUrlResolved && !node.event.optString("requestBody", "").contains(raw) && requestHeaders(node.event).none { it.second.contains(raw) }) return@forEach
                 val kind = credentialKind(key)
                 if (kind in setOf("login", "password", "otp")) return@forEach
