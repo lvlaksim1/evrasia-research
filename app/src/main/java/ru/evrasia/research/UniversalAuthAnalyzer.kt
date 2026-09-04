@@ -660,11 +660,23 @@ internal object UniversalAuthAnalyzer {
             if (!documentLike(source) && targets.isEmpty()) continue
             val direct = targets.any { navigationTargetMatches(it, target) }
             if (!direct) continue
+            if (hasDirectRedirectEvidence(source, target)) return index
             val sourceOrigin = origin(source.url)
             if (sourceOrigin.isNotBlank() && sourceOrigin !in origins && !isCrossOriginAuthBridge(source)) continue
             return index
         }
         return null
+    }
+
+    private fun hasDirectRedirectEvidence(source: Node, target: String): Boolean {
+        if (target.isBlank()) return false
+        val captured = source.event.optString("redirectURL", "")
+        if (captured.isNotBlank() && navigationTargetMatches(captured, target)) return true
+        val observed = source.event.optString("_authObservedRedirect", "")
+        if (observed.isNotBlank() && navigationTargetMatches(observed, target)) return true
+        val location = responseHeaders(source.event).firstOrNull { it.first.equals("Location", true) && it.second.isNotBlank() }?.second.orEmpty()
+        if (location.isNotBlank() && navigationTargetMatches(resolveNavigationUrl(source.url, location).orEmpty(), target)) return true
+        return false
     }
 
     private fun navigationBindingProducer(source: Node, targets: List<String>, index: Int, target: String): Producer? {
@@ -1180,7 +1192,7 @@ internal object UniversalAuthAnalyzer {
     }
 
     private fun buildRequest(event: JSONObject, method: String, rawUrl: String, baseOrigin: String, replacements: Map<String, String>): JSONObject {
-        val body = buildBody(event, replacements)
+        val body = if (method.uppercase(Locale.US) in setOf("GET", "HEAD")) null else buildBody(event, replacements)
         val formData = body?.optString("mode", "") == "formdata"
         val headers = JSONArray()
         requestHeaders(event).forEach { (name, value) ->
