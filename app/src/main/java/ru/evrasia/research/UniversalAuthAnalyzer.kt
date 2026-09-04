@@ -474,6 +474,102 @@ internal object UniversalAuthAnalyzer {
         return if (bestScore >= 8) best else null
     }
 
+    private fun navigationTargets(node: Node): List<String> {
+        val out = linkedSetOf<String>()
+
+        fun resolve(raw: String): String? {
+            var value = raw.trim().trim('"', '\'', ' ')
+            value = value.replace("&amp;", "&").replace("&#38;", "&")
+            if (value.isBlank()) return null
+            repeat(2) { value = decode(value) }
+            return try {
+                val resolved = URL(URL(node.url), value).toString()
+                if (resolved.startsWith("http://") || resolved.startsWith("https://")) resolved else null
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        fun add(raw: String) {
+            resolve(raw)?.let(out::add)
+        }
+
+        fun scanDeclared(rawUrl: String, depth: Int) {
+            if (depth > 2) return
+            val url = try { URL(rawUrl) } catch (_: Exception) { return }
+            val allowed = setOf("redirect_uri", "redirect_url", "return_url", "return", "continue", "continue_url", "next", "next_url", "callback", "callback_url", "from", "to")
+            parseUrlEncoded(url.query.orEmpty()).forEach { (key, rawValue) ->
+                if (normalizeField(key) !in allowed) return@forEach
+                var value = rawValue
+                repeat(2) { value = decode(value) }
+                val resolved = resolve(value) ?: return@forEach
+                out.add(resolved)
+                scanDeclared(resolved, depth + 1)
+            }
+        }
+
+        node.event.optString("redirectURL", "").takeIf { it.isNotBlank() }?.let(::add)
+        responseHeaders(node.event).firstOrNull { it.first.equals("Location", true) }?.second?.let(::add)
+
+        val body = responseBody(node.event)
+        if (body.isNotBlank() && body.length <= 2_000_000) {
+            if (body.trimStart().startsWith("{") || body.trimStart().startsWith("[")) {
+                try {
+                    val parsed: Any = if (body.trimStart().startsWith("{")) JSONObject(body) else JSONArray(body)
+                    collectNavigationJson(parsed, node.url, out)
+                } catch (_: Exception) {}
+            }
+
+            Regex("<meta\\b[^>]*>", RegexOption.IGNORE_CASE).findAll(body).take(100).forEach { match ->
+                val attrs = htmlAttributes(match.value)
+                if (!attrs["http-equiv"].orEmpty().equals("refresh", true)) return@forEach
+                val content = attrs["content"].orEmpty()
+                val target = Regex("(?i)url\\s*=\\s*['\"]?([^'\";]+)").find(content)?.groupValues?.getOrNull(1).orEmpty()
+                if (target.isNotBlank()) add(target)
+            }
+
+            Regex("(?i)(?:window\\.)?location(?:\\.href)?\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { add(it.groupValues[1]) }
+            Regex("(?i)\\b(?:redirect|next|return|continue)[A-Za-z0-9_]*URL\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { add(it.groupValues[1]) }
+        }
+
+        scanDeclared(node.url, 0)
+        return out.toList()
+    }
+
+    private fun collectNavigationJson(value: Any?, baseUrl: String, out: MutableSet<String>) {
+        when (value) {
+            is JSONObject -> {
+                val keys = value.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val child = value.opt(key)
+                    if (child != null && child != JSONObject.NULL && navigationKey(key)) {
+                        resolveNavigationUrl(baseUrl, child.toString())?.let(out::add)
+                    }
+                    collectNavigationJson(child, baseUrl, out)
+                }
+            }
+            is JSONArray -> for (index in 0 until minOf(value.length(), 100)) collectNavigationJson(value.opt(index), baseUrl, out)
+        }
+    }
+
+    private fun navigationKey(key: String): Boolean {
+        val value = normalizeField(key)
+        return value in setOf("location", "redirect", "redirect_url", "redirect_uri", "return_url", "continue_url", "callback_url", "next_url", "next_step_url") ||
+            ((value.contains("redirect") || value.contains("next") || value.contains("callback") || value.contains("continue") || value.contains("return")) && (value.contains("url") || value.contains("uri")))
+    }
+
+    private fun resolveNavigationUrl(baseUrl: String, raw: String): String? {
+        var value = raw.trim().trim('"', '\'', ' ').replace("&amp;", "&").replace("&#38;", "&")
+        repeat(2) { value = decode(value) }
+        return try {
+            val resolved = URL(URL(baseUrl), value).toString()
+            if (resolved.startsWith("http://") || resolved.startsWith("https://")) resolved else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun collectProducers(nodes: List<Node>, hints: List<Hint>): List<Producer> {
         val out = mutableListOf<Producer>()
         hints.forEach { hint -> hint.fields.forEach { (key, value) -> if (value.isNotBlank() && value !in setOf("[password]", "[file]") && (interestingKey(key) || tokenLike(value))) out.add(Producer(-1, key, value, "html")) } }
