@@ -36,39 +36,12 @@ internal object UniversalAuthAnalyzer {
         nodes.forEach { node -> if (isCrossOriginAuthBridge(node)) origin(node.url).takeIf { it.isNotBlank() }?.let(origins::add) }
 
         val selected = linkedSetOf(loginIndex)
-        nodes.indices.forEach { index ->
-            val node = nodes[index]
-            if (isNoise(node, origins)) return@forEach
-            val close = node.time <= 0L || login.time <= 0L || abs(node.time - login.time) <= 120_000L
-            if (close && isExplicitAuthStep(node)) selected.add(index)
-        }
-
         addPrepareRequest(nodes, hints, loginIndex, selected, origins)
 
         val producers = collectProducers(nodes, hints)
-        val bindings = mutableListOf<Binding>()
-        val usedVariables = linkedSetOf<String>()
-        var dependencyChanged = true
-        while (dependencyChanged) {
-            dependencyChanged = false
-            val consumers = selected.toList().sorted()
-            consumers.forEach { consumer ->
-                val node = nodes[consumer]
-                if (isNoise(node, origins)) return@forEach
-                val material = requestMaterial(node.event)
-                producers.asSequence()
-                    .filter { it.index < consumer && reusable(it.value) && containsMaterial(material, it.value) }
-                    .sortedByDescending { it.index }
-                    .take(6)
-                    .forEach { producer ->
-                        if (bindings.any { it.producer.index == producer.index && it.consumer == consumer && it.producer.value == producer.value }) return@forEach
-                        val variable = uniqueVariable(canonicalVariable(producer.key), usedVariables)
-                        usedVariables.add(variable)
-                        bindings.add(Binding(producer, consumer, variable))
-                        if (producer.index >= 0 && selected.add(producer.index)) dependencyChanged = true
-                    }
-            }
-        }
+        val causal = expandCausalSelection(nodes, producers, selected, origins)
+        val bindings = causal.first
+        val usedVariables = causal.second
 
         val verifyIndex: Int? = null
 
@@ -92,10 +65,10 @@ internal object UniversalAuthAnalyzer {
         addAuthHeaderVariables(nodes, selected, replacements, variables, usedVariables)
         addUsedStorageVariables(nodes, selected, before, after, replacements, variables, usedVariables)
 
-        val baseOrigin = origin(before.url).ifBlank { origin(login.url).ifBlank { origin(after.url) } }
-        if (baseOrigin.isNotBlank()) variables["base_url"] = VariableDef("base_url", baseOrigin, "Primary origin detected for this AUTH flow")
-
         val chosen = dedupe(nodes, selected)
+        val selectedOrigins = chosen.map { origin(nodes[it].url) }.filter { it.isNotBlank() }.toSet()
+        val baseOrigin = if (selectedOrigins.size == 1) selectedOrigins.first() else ""
+        if (baseOrigin.isNotBlank()) variables["base_url"] = VariableDef("base_url", baseOrigin, "Primary origin detected for this AUTH flow")
         val bindingByProducer = bindings.groupBy { it.producer.index }
         val items = JSONArray()
         var sequence = 1
