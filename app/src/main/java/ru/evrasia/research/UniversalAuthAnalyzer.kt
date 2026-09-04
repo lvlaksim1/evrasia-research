@@ -365,16 +365,30 @@ internal object UniversalAuthAnalyzer {
     }
 
     private fun findNextNavigationTarget(nodes: List<Node>, sourceIndex: Int, targets: List<String>, origins: Set<String>): Int? {
-        if (targets.isEmpty() || sourceIndex >= nodes.lastIndex) return null
+        if (targets.isEmpty()) return null
         val sourceTime = nodes[sourceIndex].time
-        val limitTime = if (sourceTime > 0L) sourceTime + 120_000L else Long.MAX_VALUE
+        val minTime = if (sourceTime > 0L) sourceTime - 2_000L else Long.MIN_VALUE
+        val maxTime = if (sourceTime > 0L) sourceTime + 120_000L else Long.MAX_VALUE
         var best: Int? = null
-        for (index in sourceIndex + 1..nodes.lastIndex) {
+        var bestDistance = Long.MAX_VALUE
+
+        nodes.indices.forEach { index ->
+            if (index == sourceIndex) return@forEach
             val candidate = nodes[index]
-            if (candidate.time > 0L && candidate.time > limitTime) break
-            if (isStatic(candidate) || isTelemetry(candidate) || logoutOrRegistration(candidate.url)) continue
-            if (targets.none { target -> navigationTargetMatches(target, candidate.url) }) continue
-            if (best == null || candidate.time <= 0L || nodes[best!!].time <= 0L || candidate.time < nodes[best!!].time) best = index
+            if (candidate.time > 0L && (candidate.time < minTime || candidate.time > maxTime)) return@forEach
+            if (isStatic(candidate) || isTelemetry(candidate) || logoutOrRegistration(candidate.url)) return@forEach
+            if (targets.none { target -> navigationTargetMatches(target, candidate.url) }) return@forEach
+
+            val distance = if (sourceTime > 0L && candidate.time > 0L) {
+                val delta = candidate.time - sourceTime
+                if (delta >= 0L) delta else 2_000L + -delta
+            } else {
+                kotlin.math.abs(index - sourceIndex).toLong()
+            }
+            if (distance < bestDistance) {
+                bestDistance = distance
+                best = index
+            }
         }
         return best
     }
@@ -528,8 +542,10 @@ internal object UniversalAuthAnalyzer {
                 if (target.isNotBlank()) add(target)
             }
 
-            Regex("(?i)(?:window\\.)?location(?:\\.href)?\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { add(it.groupValues[1]) }
-            Regex("(?i)\\b(?:redirect|next|return|continue)[A-Za-z0-9_]*URL\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { add(it.groupValues[1]) }
+            if (body.length <= 50_000) {
+                Regex("(?i)(?:window\\.)?location(?:\\.href)?\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { add(it.groupValues[1]) }
+                Regex("(?i)\\b(?:redirect|next|return|continue)[A-Za-z0-9_]*URL\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { add(it.groupValues[1]) }
+            }
         }
 
         scanDeclared(node.url, 0)
@@ -607,15 +623,17 @@ internal object UniversalAuthAnalyzer {
                     out.add(Producer(index, "redirect_url", target, "html-redirect"))
                 }
 
-                Regex("(?i)(?:window\\.)?location(?:\\.href)?\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { match ->
-                    resolveNavigationUrl(node.url, match.groupValues[1])?.let { target ->
-                        out.add(Producer(index, "redirect_url", target, "html-redirect"))
+                if (body.length <= 50_000) {
+                    Regex("(?i)(?:window\\.)?location(?:\\.href)?\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { match ->
+                        resolveNavigationUrl(node.url, match.groupValues[1])?.let { target ->
+                            out.add(Producer(index, "redirect_url", target, "html-redirect"))
+                        }
                     }
-                }
 
-                Regex("(?i)\\b(?:redirect|next|return|continue)[A-Za-z0-9_]*URL\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { match ->
-                    resolveNavigationUrl(node.url, match.groupValues[1])?.let { target ->
-                        out.add(Producer(index, "redirect_url", target, "html-redirect"))
+                    Regex("(?i)\\b(?:redirect|next|return|continue)[A-Za-z0-9_]*URL\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { match ->
+                        resolveNavigationUrl(node.url, match.groupValues[1])?.let { target ->
+                            out.add(Producer(index, "redirect_url", target, "html-redirect"))
+                        }
                     }
                 }
             }
