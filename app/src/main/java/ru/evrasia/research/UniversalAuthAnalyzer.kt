@@ -768,7 +768,7 @@ internal object UniversalAuthAnalyzer {
         if (captured.isNotBlank() && navigationTargetMatches(captured, target)) return true
         val observed = source.event.optString("_authObservedRedirect", "")
         if (observed.isNotBlank() && navigationTargetMatches(observed, target)) return true
-        val location = responseHeaders(source.event).firstOrNull { it.first.equals("Location", true) && it.second.isNotBlank() }?.second.orEmpty()
+        val location = directLocation
         if (location.isNotBlank() && navigationTargetMatches(resolveNavigationUrl(source.url, location).orEmpty(), target)) return true
         return false
     }
@@ -776,7 +776,11 @@ internal object UniversalAuthAnalyzer {
     private fun navigationBindingProducer(source: Node, targets: List<String>, index: Int, target: String): Producer? {
         if (target.isBlank()) return null
         val capturedRedirect = source.event.optString("redirectURL", "")
-        if (capturedRedirect.isNotBlank() && navigationTargetMatches(capturedRedirect, target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
+        val directLocation = responseHeaders(source.event).firstOrNull { it.first.equals("Location", true) && it.second.isNotBlank() }?.second.orEmpty()
+        if (capturedRedirect.isNotBlank() && navigationTargetMatches(capturedRedirect, target)) {
+            if (directLocation.isNotBlank() && navigationTargetMatches(resolveNavigationUrl(source.url, directLocation).orEmpty(), target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
+            return Producer(index, "redirect_url", target, "body-route", path = listOf(routeKey(target)))
+        }
         val observedRedirect = source.event.optString("_authObservedRedirect", "")
         val observedTarget = source.event.optString("_authObservedRedirectTarget", "")
         if (observedRedirect.isNotBlank() && navigationTargetMatches(observedRedirect, target)) {
