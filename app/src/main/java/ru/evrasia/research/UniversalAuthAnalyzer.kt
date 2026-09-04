@@ -92,6 +92,9 @@ internal object UniversalAuthAnalyzer {
             val item = JSONObject()
                 .put("name", "%02d %s · %s %s".format(Locale.US, sequence++, role(index, loginIndex, verifyIndex, node), node.method, compact(node.url)))
                 .put("request", request)
+            if (node.event.optString("redirectURL", "").isNotBlank() || responseHeaders(node.event).any { it.first.equals("Location", true) && it.second.isNotBlank() }) {
+                item.put("protocolProfileBehavior", JSONObject().put("followRedirects", false))
+            }
             buildResponse(node.event, request)?.let { item.put("response", JSONArray().put(it)) }
             val tests = testsFor(bindingByProducer[index].orEmpty())
             if (tests.isNotEmpty()) item.put("event", testEvent(tests))
@@ -367,7 +370,19 @@ internal object UniversalAuthAnalyzer {
                 }
 
                 val navigationSource = findPreviousNavigationSource(nodes, consumer, origins, endIndex)
-                if (navigationSource != null && selected.add(navigationSource)) changed = true
+                if (navigationSource != null) {
+                    val navigationProducer = navigationBindingProducer(nodes[navigationSource], navigationSource, nodes[consumer].url)
+                    if (navigationProducer != null && bindings.none { it.consumer == consumer && it.producer.kind == navigationProducer.kind && it.producer.index == navigationSource }) {
+                        val variable = variableByValue[navigationProducer.value] ?: run {
+                            val created = uniqueVariable("redirect_url", usedVariables)
+                            usedVariables.add(created)
+                            variableByValue[navigationProducer.value] = created
+                            created
+                        }
+                        bindings.add(Binding(navigationProducer, consumer, variable))
+                    }
+                    if (selected.add(navigationSource)) changed = true
+                }
             }
 
             selected.toList().sorted().filter { it <= endIndex }.forEach { sourceIndex ->
@@ -429,6 +444,15 @@ internal object UniversalAuthAnalyzer {
         return null
     }
 
+    private fun navigationBindingProducer(source: Node, index: Int, target: String): Producer? {
+        if (target.isBlank()) return null
+        val capturedRedirect = source.event.optString("redirectURL", "")
+        if (capturedRedirect.isNotBlank() && navigationTargetMatches(capturedRedirect, target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
+        val location = responseHeaders(source.event).firstOrNull { it.first.equals("Location", true) && it.second.isNotBlank() }?.second.orEmpty()
+        if (location.isNotBlank() && navigationTargetMatches(resolveNavigationUrl(source.url, location).orEmpty(), target)) return Producer(index, "redirect_url", target, "redirect", header = "Location")
+        if (navigationTargets(source).any { navigationTargetMatches(it, target) } || responseReferencesTarget(source, target)) return Producer(index, "redirect_url", target, "html-redirect")
+        return null
+    }
     private fun responseReferencesTarget(source: Node, target: String): Boolean {
         val body = responseBody(source.event)
         if (body.isBlank() || body.length > 2_000_000 || target.isBlank()) return false
@@ -742,6 +766,14 @@ internal object UniversalAuthAnalyzer {
                 }
             }
 
+            node.event.optString("redirectURL", "").takeIf { it.isNotBlank() }?.let { rawRedirect ->
+                out.add(Producer(index, "redirect_url", rawRedirect, "redirect", header = "Location"))
+                try {
+                    parseUrlEncoded(URL(rawRedirect).query.orEmpty()).forEach { (key, queryValue) ->
+                        if ((interestingKey(key) || credentialKind(key) != null) && reusable(queryValue)) out.add(Producer(index, key, queryValue, "location", header = key))
+                    }
+                } catch (_: Exception) {}
+            }
             responseHeaders(node.event).forEach { (name, value) ->
                 val lower = name.lowercase(Locale.US)
                 if (lower == "set-cookie") return@forEach
@@ -875,8 +907,11 @@ internal object UniversalAuthAnalyzer {
         unresolved: MutableSet<String>
     ) {
         selected.sorted().forEach { index ->
-            fields(nodes[index].event).forEach { (key, raw) ->
+            val node = nodes[index]
+            val wholeUrlResolved = replacements.containsKey(node.url)
+            fields(node.event).forEach { (key, raw) ->
                 if (raw.isBlank() || raw in setOf("[password]", "[file]", "[unavailable]") || replacements.containsKey(raw)) return@forEach
+                if (wholeUrlResolved && !node.event.optString("requestBody", "").contains(raw) && requestHeaders(node.event).none { it.second.contains(raw) }) return@forEach
                 val kind = credentialKind(key)
                 if (kind in setOf("login", "password", "otp")) return@forEach
                 if (kind == null && !interestingKey(key) && !tokenLike(raw)) return@forEach
@@ -1001,12 +1036,13 @@ internal object UniversalAuthAnalyzer {
                 }
                 "html-query" -> {
                     lines.add("try {")
-                    lines.add("  const text = pm.response.text().replace(/&amp;/g, '&').replace(/&#38;/g, '&').replace(/\\\\u0026/g, '&').replace(/\\\\\\\\\//g, '/');")
+                    lines.add("  const text = pm.response.text().replace(/&amp;/g, '&').replace(/&#38;/g, '&').replace(/\\\\u0026/g, '&');")
                     lines.add("  const key = ${JSONObject.quote(binding.producer.header.ifBlank { binding.producer.key })};")
                     lines.add("  const marker = key + '='; const pos = text.indexOf(marker);")
                     lines.add("  if (pos >= 0) { const tail = text.substring(pos + marker.length); const raw = tail.split(/[&#\\\"'\\\\s<>]/)[0]; if (raw) pm.collectionVariables.set($variable, decodeURIComponent(raw)); }")
                     lines.add("} catch (e) {}")
-                }                "html" -> {
+                }
+                "html" -> {
                     lines.add("try {")
                     lines.add("  const text = pm.response.text();")
                     lines.add("  const key = ${JSONObject.quote(binding.producer.key)};")
