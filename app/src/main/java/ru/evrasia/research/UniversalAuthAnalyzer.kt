@@ -251,6 +251,106 @@ internal object UniversalAuthAnalyzer {
         return listOf("auth", "login", "signin", "sign_in", "authorize", "token", "session", "sso", "verify", "password", "otp", "mfa", "2fa", "refresh").any(lower::contains)
     }
 
+    private fun expandCausalSelection(
+        nodes: List<Node>,
+        producers: List<Producer>,
+        selected: MutableSet<Int>,
+        origins: Set<String>
+    ): Pair<MutableList<Binding>, LinkedHashSet<String>> {
+        val bindings = mutableListOf<Binding>()
+        val usedVariables = linkedSetOf<String>()
+        val variableByValue = linkedMapOf<String, String>()
+        var changed = true
+        var pass = 0
+
+        while (changed && pass++ < 40) {
+            changed = false
+
+            selected.toList().sorted().forEach { consumer ->
+                val material = requestMaterial(nodes[consumer].event)
+                val candidates = producers.asSequence()
+                    .filter { it.index < consumer && reusable(it.value) && containsMaterial(material, it.value) }
+                    .filter { it.index < 0 || !isNoise(nodes[it.index], origins) }
+                    .groupBy { it.value }
+
+                candidates.values.forEach { options ->
+                    val producer = options.maxByOrNull { it.index } ?: return@forEach
+                    if (bindings.none { it.consumer == consumer && it.producer.value == producer.value }) {
+                        val variable = variableByValue[producer.value] ?: run {
+                            val created = uniqueVariable(canonicalVariable(producer.key), usedVariables)
+                            usedVariables.add(created)
+                            variableByValue[producer.value] = created
+                            created
+                        }
+                        bindings.add(Binding(producer, consumer, variable))
+                    }
+                    if (producer.index >= 0 && selected.add(producer.index)) changed = true
+                }
+            }
+
+            selected.toList().sorted().forEach { sourceIndex ->
+                val source = nodes[sourceIndex]
+                val limitTime = if (source.time > 0L) source.time + 120_000L else Long.MAX_VALUE
+
+                producers.asSequence()
+                    .filter { it.index == sourceIndex && reusable(it.value) }
+                    .forEach { producer ->
+                        for (index in sourceIndex + 1..nodes.lastIndex) {
+                            val candidate = nodes[index]
+                            if (candidate.time > 0L && candidate.time > limitTime) break
+                            if (isNoise(candidate, origins) || !isExplicitAuthStep(candidate)) continue
+                            if (containsMaterial(requestMaterial(candidate.event), producer.value) || stepTransitionMatches(producer, candidate)) {
+                                if (selected.add(index)) changed = true
+                            }
+                        }
+                    }
+
+                val navigationIndex = findNextNavigationTarget(nodes, sourceIndex, navigationTargets(source), origins)
+                if (navigationIndex != null && selected.add(navigationIndex)) changed = true
+            }
+        }
+
+        return bindings to usedVariables
+    }
+
+    private fun stepTransitionMatches(producer: Producer, node: Node): Boolean {
+        val key = normalizeField(producer.key)
+        if (!(key.contains("next") || key.contains("step") || key.contains("flow") || key.contains("action"))) return false
+        val value = normalizeField(producer.value)
+        if (value.length < 6 || value.length > 100) return false
+        val route = normalizeField(try { URL(node.url).path } catch (_: Exception) { node.url.substringBefore('?') })
+        return route.contains(value) || value.contains(route.takeIf { it.length >= 6 } ?: return false)
+    }
+
+    private fun findNextNavigationTarget(nodes: List<Node>, sourceIndex: Int, targets: List<String>, origins: Set<String>): Int? {
+        if (targets.isEmpty() || sourceIndex >= nodes.lastIndex) return null
+        val sourceTime = nodes[sourceIndex].time
+        val limitTime = if (sourceTime > 0L) sourceTime + 120_000L else Long.MAX_VALUE
+        var best: Int? = null
+        for (index in sourceIndex + 1..nodes.lastIndex) {
+            val candidate = nodes[index]
+            if (candidate.time > 0L && candidate.time > limitTime) break
+            if (isNoise(candidate, origins)) continue
+            if (targets.none { target -> navigationTargetMatches(target, candidate.url) }) continue
+            if (best == null || candidate.time <= 0L || nodes[best!!].time <= 0L || candidate.time < nodes[best!!].time) best = index
+        }
+        return best
+    }
+
+    private fun navigationTargetMatches(target: String, actual: String): Boolean {
+        if (target.isBlank() || actual.isBlank()) return false
+        if (normalizeUrl(target) == normalizeUrl(actual)) return true
+        return routeKey(target).isNotBlank() && routeKey(target) == routeKey(actual)
+    }
+
+    private fun routeKey(raw: String): String = try {
+        val url = URL(raw)
+        val port = if (url.port > 0 && url.port != url.defaultPort) ":${url.port}" else ""
+        "${url.protocol.lowercase(Locale.US)}://${url.host.lowercase(Locale.US)}$port${url.path.ifBlank { "/" }}"
+    } catch (_: Exception) {
+        raw.substringBefore('?').substringBefore('#')
+    }
+
     private fun addPrepareRequest(nodes: List<Node>, hints: List<Hint>, loginIndex: Int, selected: MutableSet<Int>, origins: Set<String>) {
         val first = selected.minOrNull() ?: loginIndex
         val hintPages = hints.map { normalizeUrl(it.page) }.filter { it.isNotBlank() }.toSet()
