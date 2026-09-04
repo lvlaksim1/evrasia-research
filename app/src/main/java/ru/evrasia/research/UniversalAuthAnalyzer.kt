@@ -1377,6 +1377,42 @@ internal object UniversalAuthAnalyzer {
                 "header" -> lines.add("try { const value = pm.response.headers.get(${JSONObject.quote(binding.producer.header)}); if (value) pm.collectionVariables.set($variable, String(value)); } catch (e) {}")
                 "location" -> lines.add("try { const value = new URL(pm.response.headers.get('Location'), pm.request.url.toString()).searchParams.get(${JSONObject.quote(binding.producer.header)}); if (value) pm.collectionVariables.set($variable, value); } catch (e) {}")
                 "redirect" -> lines.add("try { const value = pm.response.headers.get('Location'); if (value) pm.collectionVariables.set($variable, new URL(value, pm.request.url.toString()).toString()); } catch (e) {}")
+                "body-route", "body-route-query", "body-route-query-json" -> {
+                    val route = binding.producer.path?.firstOrNull().orEmpty()
+                    val jsonPath = binding.producer.path?.drop(1).orEmpty()
+                    lines.add("try {")
+                    lines.add("  const text = pm.response.text().split('\\\\/').join('/').split('\\\\u0026').join('&').split('&amp;').join('&').split('&#38;').join('&').split('&quot;').join('\\\"');")
+                    lines.add("  const route = ${JSONObject.quote(route)};")
+                    lines.add("  const pos = text.indexOf(route);")
+                    lines.add("  let found = null;")
+                    lines.add("  if (pos >= 0) {")
+                    lines.add("    let end = pos; const stops = ['\\\"', \"\'\", '<', '>', ' ', '\\n', '\\r', '\\t'];")
+                    lines.add("    while (end < text.length && !stops.includes(text[end])) end++;")
+                    lines.add("    let raw = text.substring(pos, end);")
+                    lines.add("    while (raw && [')', ',', ';', ']', '}'].includes(raw[raw.length - 1])) raw = raw.slice(0, -1);")
+                    lines.add("    try { found = new URL(raw); } catch (e) {}")
+                    lines.add("  }")
+                    when (binding.producer.kind) {
+                        "body-route" -> lines.add("  if (found) pm.collectionVariables.set($variable, found.toString());")
+                        "body-route-query" -> {
+                            val key = JSONObject.quote(binding.producer.header)
+                            lines.add("  if (found) { const value = found.searchParams.get($key); if (value != null && value !== '') pm.collectionVariables.set($variable, String(value)); }")
+                        }
+                        "body-route-query-json" -> {
+                            val key = JSONObject.quote(binding.producer.header)
+                            lines.add("  if (found) {")
+                            lines.add("    const rawValue = found.searchParams.get($key);")
+                            lines.add("    if (rawValue) {")
+                            lines.add("      let value = JSON.parse(rawValue);")
+                            lines.add("      for (const key of ${JSONArray(jsonPath)}) value = value == null ? undefined : value[key];")
+                            lines.add("      if (value !== undefined && value !== null) pm.collectionVariables.set($variable, String(value));")
+                            lines.add("    }")
+                            lines.add("  }")
+                        }
+                    }
+                    lines.add("} catch (e) {}")
+                }
+
                 "html-redirect" -> {
                     lines.add("try {")
                     lines.add("  const text = pm.response.text();")
