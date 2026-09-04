@@ -26,6 +26,7 @@ internal object UniversalAuthAnalyzer {
     private data class ForwardSelection(val indices: List<Int>, val edges: List<CausalEdge>)
     private data class VariableDef(val key: String, val value: String, val description: String)
     private data class DerivedRule(val captured: String, val variable: String, val depth: Int)
+    private data class Base64Derivation(val decoded: String, val rules: List<DerivedRule>, val urlSafe: Boolean, val padded: Boolean)
 
     fun analyze(
         events: List<JSONObject>,
@@ -1287,6 +1288,129 @@ internal object UniversalAuthAnalyzer {
             is JSONArray -> for (i in 0 until minOf(value.length(), 50)) collectTokenKeys(value.opt(i), out)
         }
     }
+
+    private fun addLocalRuntimeVariables(
+        nodes: List<Node>,
+        selected: Set<Int>,
+        bindings: List<Binding>,
+        userReplacements: Map<String, String>,
+        replacements: MutableMap<String, String>,
+        variables: MutableMap<String, VariableDef>,
+        used: MutableSet<String>,
+        preRequestScripts: MutableMap<Int, MutableList<String>>,
+        localProducedAt: MutableMap<String, Int>
+    ) {
+        selected.sorted().forEach { index ->
+            val node = nodes[index]
+            val wholeUrlResolved = replacements.containsKey(node.url)
+            val available = linkedMapOf<String, String>()
+            available.putAll(userReplacements)
+            bindings.filter { it.producer.index >= 0 && it.producer.index < index }.forEach { binding ->
+                available.putIfAbsent(binding.producer.value, binding.variable)
+            }
+            localProducedAt.filterValues { it < index }.forEach { (raw, _) ->
+                replacements[raw]?.let { variable -> available.putIfAbsent(raw, variable) }
+            }
+
+            fields(node.event).forEach { (key, raw) ->
+                if (raw.isBlank() || raw in setOf("[password]", "[file]", "[unavailable]") || replacements.containsKey(raw)) return@forEach
+                if (wholeUrlResolved && !node.event.optString("requestBody", "").contains(raw) && requestHeaders(node.event).none { it.second.contains(raw) }) return@forEach
+                val normalized = normalizeField(key)
+
+                if (generatedDeviceKey(normalized) && localIdentifier(raw)) {
+                    val base = normalized.ifBlank { "device_id" }.take(48)
+                    val variable = uniqueVariable(base, used)
+                    used.add(variable)
+                    replacements[raw] = variable
+                    variables[variable] = VariableDef(variable, "", "Generated locally before first AUTH use; captured value is not reused")
+                    localProducedAt[raw] = index
+                    preRequestScripts.getOrPut(index) { mutableListOf() }.addAll(generatedIdentifierScript(variable, raw.length))
+                    available[raw] = variable
+                    return@forEach
+                }
+
+                val derivation = base64Derivation(raw, available) ?: return@forEach
+                val base = canonicalVariable(key)
+                val variable = uniqueVariable(base, used)
+                used.add(variable)
+                replacements[raw] = variable
+                variables[variable] = VariableDef(variable, "", "Generated locally from earlier AUTH values before request")
+                localProducedAt[raw] = index
+                preRequestScripts.getOrPut(index) { mutableListOf() }.addAll(base64DerivationScript(variable, derivation))
+                available[raw] = variable
+            }
+        }
+    }
+
+    private fun generatedDeviceKey(value: String): Boolean =
+        value in setOf("device_id", "deviceid", "client_device_id", "browser_device_id") || value.endsWith("_device_id")
+
+    private fun localIdentifier(value: String): Boolean =
+        value.length in 12..128 && value.all { it.isLetterOrDigit() || it == '-' || it == '_' }
+
+    private fun generatedIdentifierScript(variable: String, length: Int): List<String> {
+        val name = JSONObject.quote(variable)
+        return listOf(
+            "try {",
+            "  if (!pm.collectionVariables.get($name)) {",
+            "    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';",
+            "    let value = '';",
+            "    for (let i = 0; i < $length; i++) value += chars[Math.floor(Math.random() * chars.length)];",
+            "    pm.collectionVariables.set($name, value);",
+            "  }",
+            "} catch (e) {}"
+        )
+    }
+
+    private fun base64Derivation(raw: String, available: Map<String, String>): Base64Derivation? {
+        if (raw.length !in 16..8192 || raw.any { it.isWhitespace() }) return null
+        val normalized = raw.replace('-', '+').replace('_', '/')
+        val padded = normalized + "=".repeat((4 - normalized.length % 4) % 4)
+        val bytes = try { Base64.getDecoder().decode(padded) } catch (_: Exception) { return null }
+        val decoded = try { bytes.toString(Charsets.UTF_8) } catch (_: Exception) { return null }
+        if (decoded.length !in 8..8192) return null
+        val printable = decoded.count { it == '\n' || it == '\r' || it == '\t' || it.code in 32..126 }
+        if (printable * 100 < decoded.length * 95) return null
+        if (!decoded.contains("http://", true) && !decoded.contains("https://", true)) return null
+
+        val rules = mutableListOf<DerivedRule>()
+        available.entries.sortedByDescending { it.key.length }.forEach { (capturedValue, variable) ->
+            if (capturedValue.length < 4) return@forEach
+            var form = capturedValue
+            for (depth in 0..3) {
+                if (form.length >= 4 && decoded.contains(form) && rules.none { it.captured == form }) {
+                    rules.add(DerivedRule(form, variable, depth))
+                }
+                form = urlEncodeOnce(form)
+            }
+        }
+        if (rules.isEmpty()) return null
+        return Base64Derivation(decoded, rules.sortedByDescending { it.captured.length }, raw.any { it == '-' || it == '_' }, raw.endsWith("="))
+    }
+
+    private fun base64DerivationScript(variable: String, derivation: Base64Derivation): List<String> {
+        val lines = mutableListOf<String>()
+        val name = JSONObject.quote(variable)
+        lines.add("try {")
+        lines.add("  const encodeN = (input, depth) => { let value = String(input == null ? '' : input); for (let i = 0; i < depth; i++) value = encodeURIComponent(value); return value; };")
+        lines.add("  let value = ${JSONObject.quote(derivation.decoded)};")
+        derivation.rules.forEach { rule ->
+            lines.add("  value = value.split(${JSONObject.quote(rule.captured)}).join(encodeN(pm.variables.get(${JSONObject.quote(rule.variable)}), ${rule.depth}));")
+        }
+        lines.add("  let encoded = btoa(value);")
+        if (derivation.urlSafe) lines.add("  encoded = encoded.replace(/\\+/g, '-').replace(/\\//g, '_');")
+        if (!derivation.padded) lines.add("  encoded = encoded.replace(/=+$/, '');")
+        lines.add("  pm.collectionVariables.set($name, encoded);")
+        lines.add("} catch (e) {}")
+        return lines
+    }
+
+    private fun urlEncodeOnce(value: String): String = try {
+        URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+    } catch (_: Exception) {
+        value
+    }
+
 
     private fun addUnresolvedDynamicVariables(
         nodes: List<Node>,
