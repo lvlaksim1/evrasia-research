@@ -372,7 +372,7 @@ internal object UniversalAuthAnalyzer {
         for (index in sourceIndex + 1..nodes.lastIndex) {
             val candidate = nodes[index]
             if (candidate.time > 0L && candidate.time > limitTime) break
-            if (isNoise(candidate, origins)) continue
+            if (isStatic(candidate) || isTelemetry(candidate) || logoutOrRegistration(candidate.url)) continue
             if (targets.none { target -> navigationTargetMatches(target, candidate.url) }) continue
             if (best == null || candidate.time <= 0L || nodes[best!!].time <= 0L || candidate.time < nodes[best!!].time) best = index
         }
@@ -851,8 +851,22 @@ internal object UniversalAuthAnalyzer {
     private fun role(index: Int, login: Int, verify: Int?, node: Node): String = when { index == login -> "Login"; index == verify -> "Verify authenticated session"; looksRefresh(node) -> "Refresh / token renewal"; index < login -> "Prepare / auth dependency"; hasCredentials(node.event) -> "Authentication step"; else -> "Auth dependency" }
 
     private fun dedupe(nodes: List<Node>, selected: Set<Int>): List<Int> {
-        val seen = linkedSetOf<String>(); val out = mutableListOf<Int>()
-        selected.sorted().forEach { index -> val node = nodes[index]; val body = node.event.optString("requestBody", ""); val fingerprint = if (body.length <= 200) body else body.take(100) + "#" + body.length + "#" + body.takeLast(80); if (seen.add("${node.method}|${normalizeUrl(node.url)}|$fingerprint")) out.add(index) }
+        val seen = linkedSetOf<String>()
+        val out = mutableListOf<Int>()
+        selected.sorted().forEach { index ->
+            val node = nodes[index]
+            val requestBody = node.event.optString("requestBody", "")
+            val requestFingerprint = if (requestBody.length <= 200) requestBody else requestBody.take(100) + "#" + requestBody.length + "#" + requestBody.takeLast(80)
+            val responseBody = responseBody(node.event)
+            val responseFingerprint = when {
+                node.event.optString("redirectURL", "").isNotBlank() -> node.event.optString("redirectURL", "")
+                responseHeaders(node.event).any { it.first.equals("Location", true) } -> responseHeaders(node.event).first { it.first.equals("Location", true) }.second
+                responseBody.isNotBlank() -> responseBody.take(80) + "#" + responseBody.length + "#" + responseBody.takeLast(60)
+                else -> ""
+            }
+            val key = "${node.method}|${normalizeUrl(node.url)}|$requestFingerprint|$responseFingerprint"
+            if (seen.add(key)) out.add(index)
+        }
         return out
     }
 
@@ -877,14 +891,29 @@ internal object UniversalAuthAnalyzer {
         return listOf(".css", ".js", ".mjs", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".map", ".mp4", ".webm", ".mp3").any(path::endsWith)
     }
 
-    private fun documentLike(node: Node): Boolean = node.source == "navigation" || (node.method == "GET" && NetworkEventClassifier.responseKind(node.event) in setOf("HTML", "TEXT", "OTHER"))
-    private fun isTelemetry(node: Node): Boolean { val path = try { URL(node.url).path.lowercase(Locale.US) } catch (_: Exception) { node.url.lowercase(Locale.US) }; return listOf("/collect", "/analytics", "/telemetry", "/metrics", "/metric/", "/pixel", "/watch/", "/track", "/counter", "/beacon").any(path::contains) || node.source == "beacon" }
+    private fun documentLike(node: Node): Boolean =
+        node.source in setOf("navigation", "new-window", "auth-page-source") ||
+            node.event.optBoolean("_authPageSourceSynthetic", false) ||
+            (node.method == "GET" && NetworkEventClassifier.responseKind(node.event) in setOf("HTML", "TEXT", "OTHER"))
+
+    private fun isTelemetry(node: Node): Boolean {
+        if (node.source == "beacon") return true
+        val lower = node.url.lowercase(Locale.US)
+        val path = try { URL(node.url).path.lowercase(Locale.US) } catch (_: Exception) { lower.substringBefore('?') }
+        val requestType = requestHeaders(node.event).firstOrNull { it.first.equals("Content-Type", true) }?.second.orEmpty().lowercase(Locale.US)
+        if (requestType.contains("csp-report") || requestType.contains("report-to")) return true
+        return listOf(
+            "/collect", "/analytics", "/telemetry", "/metrics", "/metric/", "/pixel", "/watch/", "/track", "/counter", "/beacon",
+            "statevents.", "/xray/", "/utils/xray/", "radar.", "tracksession", "subscribecommonqueue", "cspreport", "/csp-report"
+        ).any { lower.contains(it) || path.contains(it) }
+    }
+
     private fun isCrossOriginAuthBridge(node: Node): Boolean {
         if (isStatic(node) || isTelemetry(node)) return false
         val lower = node.url.lowercase(Locale.US)
-        if (authPath(node.url) && (node.method in setOf("POST", "PUT", "PATCH") || hasCredentials(node.event))) return true
-        if (listOf("client_id=", "redirect_uri=", "response_type=", "code_challenge=", "samlrequest=", "samlresponse=").any(lower::contains)) return true
-        return responseTokenKeys(node.event).isNotEmpty() || requestHeaders(node.event).any { it.first.equals("Authorization", true) && it.second.isNotBlank() }
+        if ((authPath(node.url) || authOperation(node)) && (node.method in setOf("POST", "PUT", "PATCH") || hasCredentials(node.event) || responseTokenKeys(node.event).isNotEmpty())) return true
+        if (listOf("redirect_uri=", "response_type=", "code_challenge=", "code_verifier=", "samlrequest=", "samlresponse=").any(lower::contains)) return true
+        return requestHeaders(node.event).any { it.first.equals("Authorization", true) && it.second.isNotBlank() }
     }
     private fun looksLikeLoginResponse(event: JSONObject, url: String): Boolean { val body = responseBody(event).lowercase(Locale.US); if (body.isBlank()) return false; val password = body.contains("type=\"password\"") || body.contains("type='password'") || body.contains("name=\"password\"") || body.contains("name='password'"); return password && (authPath(url) || body.contains("login") || body.contains("signin") || body.contains("username")) }
     private fun looksRefresh(node: Node): Boolean { val lower = node.url.lowercase(Locale.US); return lower.contains("refresh") || fields(node.event).keys.any { normalizeField(it).contains("refresh_token") || normalizeField(it) == "refresh" } }
