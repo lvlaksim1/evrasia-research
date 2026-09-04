@@ -26,6 +26,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.WeakHashMap
+import kotlin.concurrent.thread
 
 internal object ResultDelivery {
     private const val REQUEST_SAVE = 7901
@@ -66,8 +67,13 @@ internal object ResultDelivery {
         mime: String,
         writer: (OutputStream) -> Unit
     ) {
-        val prepared = prepare(activity, title, fileName, mime, null, writer) ?: return
-        showChoice(activity, prepared)
+        thread(name = "web-research-export-prepare") {
+            val prepared = prepare(activity, title, fileName, mime, null, writer) ?: return@thread
+            activity.runOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                showChoice(activity, prepared)
+            }
+        }
     }
 
     fun defaultFileName(label: String, value: String = ""): String {
@@ -89,14 +95,26 @@ internal object ResultDelivery {
         val prepared = synchronized(pendingSave) { pendingSave.remove(activity) } ?: return true
         if (resultCode != Activity.RESULT_OK) return true
         val uri = data?.data ?: return true
-        return try {
-            activity.contentResolver.openOutputStream(uri)?.use { output -> prepared.file.inputStream().use { input -> input.copyTo(output) } }
-            Toast.makeText(activity, "Файл сохранён", Toast.LENGTH_SHORT).show()
-            true
-        } catch (_: Exception) {
-            Toast.makeText(activity, "Не удалось сохранить файл", Toast.LENGTH_LONG).show()
-            true
+        Toast.makeText(activity, "Сохраняю файл…", Toast.LENGTH_SHORT).show()
+        thread(name = "web-research-export-save") {
+            try {
+                activity.contentResolver.openOutputStream(uri)?.use { output ->
+                    prepared.file.inputStream().use { input -> input.copyTo(output) }
+                } ?: throw IllegalStateException("Output stream is unavailable")
+                activity.runOnUiThread {
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        Toast.makeText(activity, "Файл сохранён: ${prepared.file.name}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (_: Exception) {
+                activity.runOnUiThread {
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        Toast.makeText(activity, "Не удалось сохранить файл", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
         }
+        return true
     }
 
     private fun prepare(
@@ -114,7 +132,11 @@ internal object ResultDelivery {
             file.outputStream().use(writer)
             Prepared(title, file, mime.ifBlank { "application/octet-stream" }, clipboardText)
         } catch (_: Exception) {
-            Toast.makeText(activity, "Не удалось подготовить результат", Toast.LENGTH_LONG).show()
+            activity.runOnUiThread {
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    Toast.makeText(activity, "Не удалось подготовить результат", Toast.LENGTH_LONG).show()
+                }
+            }
             null
         }
     }
@@ -187,25 +209,41 @@ internal object ResultDelivery {
             }, REQUEST_SAVE)
             return true
         }
-        return try {
-            val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, prepared.file.name)
-                put(MediaStore.Downloads.MIME_TYPE, prepared.mime)
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                put(MediaStore.Downloads.IS_PENDING, 1)
-            }
+
+        Toast.makeText(activity, "Сохраняю файл…", Toast.LENGTH_SHORT).show()
+        thread(name = "web-research-export-save") {
             val resolver = activity.contentResolver
-            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
-            resolver.openOutputStream(uri)?.use { output -> prepared.file.inputStream().use { input -> input.copyTo(output) } }
-            values.clear()
-            values.put(MediaStore.Downloads.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
-            Toast.makeText(activity, "Файл сохранён в Загрузки", Toast.LENGTH_SHORT).show()
-            true
-        } catch (_: Exception) {
-            Toast.makeText(activity, "Не удалось сохранить файл", Toast.LENGTH_LONG).show()
-            false
+            var uri: android.net.Uri? = null
+            try {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, prepared.file.name)
+                    put(MediaStore.Downloads.MIME_TYPE, prepared.mime)
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IllegalStateException("Unable to create Downloads entry")
+                resolver.openOutputStream(uri)?.use { output ->
+                    prepared.file.inputStream().use { input -> input.copyTo(output) }
+                } ?: throw IllegalStateException("Output stream is unavailable")
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                activity.runOnUiThread {
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        Toast.makeText(activity, "Файл сохранён в Загрузки: ${prepared.file.name}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (_: Exception) {
+                try { uri?.let { resolver.delete(it, null, null) } } catch (_: Exception) {}
+                activity.runOnUiThread {
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        Toast.makeText(activity, "Не удалось сохранить файл", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
         }
+        return true
     }
 
     private fun share(activity: Activity, prepared: Prepared) {
