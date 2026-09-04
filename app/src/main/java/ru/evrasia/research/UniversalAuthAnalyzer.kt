@@ -462,13 +462,13 @@ internal object UniversalAuthAnalyzer {
                 }
 
                 candidates.forEach { producer ->
+                    val variable = variableByValue[producer.value] ?: run {
+                        val created = uniqueVariable(canonicalVariable(producer.key), usedVariables)
+                        usedVariables.add(created)
+                        variableByValue[producer.value] = created
+                        created
+                    }
                     if (bindings.none { it.consumer == consumer && it.producer.value == producer.value }) {
-                        val variable = variableByValue[producer.value] ?: run {
-                            val created = uniqueVariable(canonicalVariable(producer.key), usedVariables)
-                            usedVariables.add(created)
-                            variableByValue[producer.value] = created
-                            created
-                        }
                         bindings.add(Binding(producer, consumer, variable))
                     }
                     if (producer.index >= 0) addEdge(producer.index, consumer, "value", variable)
@@ -485,17 +485,19 @@ internal object UniversalAuthAnalyzer {
                 }
                 if (navigationSource != null) {
                     val navigationProducer = navigationBindingProducer(nodes[navigationSource], navigationCache[navigationSource], navigationSource, nodes[consumer].url)
-                    if (navigationProducer != null && bindings.none { it.consumer == consumer && it.producer.kind == navigationProducer.kind && it.producer.index == navigationSource }) {
+                    if (navigationProducer != null) {
                         val variable = variableByValue[navigationProducer.value] ?: run {
                             val created = uniqueVariable("redirect_url", usedVariables)
                             usedVariables.add(created)
                             variableByValue[navigationProducer.value] = created
                             created
                         }
-                        bindings.add(Binding(navigationProducer, consumer, variable))
+                        if (bindings.none { it.consumer == consumer && it.producer.kind == navigationProducer.kind && it.producer.index == navigationSource }) {
+                            bindings.add(Binding(navigationProducer, consumer, variable))
+                        }
+                        addEdge(navigationSource, consumer, "navigation", navigationProducer.kind)
+                        if (selected.add(navigationSource)) changed = true
                     }
-                    addEdge(navigationSource, consumer, "navigation", navigationProducer.kind)
-                    if (selected.add(navigationSource)) changed = true
                 }
             }
 
