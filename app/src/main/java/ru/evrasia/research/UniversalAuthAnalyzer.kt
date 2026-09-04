@@ -36,39 +36,12 @@ internal object UniversalAuthAnalyzer {
         nodes.forEach { node -> if (isCrossOriginAuthBridge(node)) origin(node.url).takeIf { it.isNotBlank() }?.let(origins::add) }
 
         val selected = linkedSetOf(loginIndex)
-        nodes.indices.forEach { index ->
-            val node = nodes[index]
-            if (isNoise(node, origins)) return@forEach
-            val close = node.time <= 0L || login.time <= 0L || abs(node.time - login.time) <= 120_000L
-            if (close && isExplicitAuthStep(node)) selected.add(index)
-        }
-
         addPrepareRequest(nodes, hints, loginIndex, selected, origins)
 
         val producers = collectProducers(nodes, hints)
-        val bindings = mutableListOf<Binding>()
-        val usedVariables = linkedSetOf<String>()
-        var dependencyChanged = true
-        while (dependencyChanged) {
-            dependencyChanged = false
-            val consumers = selected.toList().sorted()
-            consumers.forEach { consumer ->
-                val node = nodes[consumer]
-                if (isNoise(node, origins)) return@forEach
-                val material = requestMaterial(node.event)
-                producers.asSequence()
-                    .filter { it.index < consumer && reusable(it.value) && containsMaterial(material, it.value) }
-                    .sortedByDescending { it.index }
-                    .take(6)
-                    .forEach { producer ->
-                        if (bindings.any { it.producer.index == producer.index && it.consumer == consumer && it.producer.value == producer.value }) return@forEach
-                        val variable = uniqueVariable(canonicalVariable(producer.key), usedVariables)
-                        usedVariables.add(variable)
-                        bindings.add(Binding(producer, consumer, variable))
-                        if (producer.index >= 0 && selected.add(producer.index)) dependencyChanged = true
-                    }
-            }
-        }
+        val causal = expandCausalSelection(nodes, producers, selected, origins)
+        val bindings = causal.first
+        val usedVariables = causal.second
 
         val verifyIndex: Int? = null
 
@@ -92,10 +65,10 @@ internal object UniversalAuthAnalyzer {
         addAuthHeaderVariables(nodes, selected, replacements, variables, usedVariables)
         addUsedStorageVariables(nodes, selected, before, after, replacements, variables, usedVariables)
 
-        val baseOrigin = origin(before.url).ifBlank { origin(login.url).ifBlank { origin(after.url) } }
-        if (baseOrigin.isNotBlank()) variables["base_url"] = VariableDef("base_url", baseOrigin, "Primary origin detected for this AUTH flow")
-
         val chosen = dedupe(nodes, selected)
+        val selectedOrigins = chosen.map { origin(nodes[it].url) }.filter { it.isNotBlank() }.toSet()
+        val baseOrigin = if (selectedOrigins.size == 1) selectedOrigins.first() else ""
+        if (baseOrigin.isNotBlank()) variables["base_url"] = VariableDef("base_url", baseOrigin, "Primary origin detected for this AUTH flow")
         val bindingByProducer = bindings.groupBy { it.producer.index }
         val items = JSONArray()
         var sequence = 1
@@ -160,11 +133,82 @@ internal object UniversalAuthAnalyzer {
             Hint(JSONObject(event.toString()), event.optString("page", ""), event.optString("url", ""), event.optString("method", "POST").uppercase(Locale.US), event.optLong("time", 0L), hintFields(event))
         }.sortedBy { it.time }
 
-        val real = NetworkDisplayMerger.merge(events.map { JSONObject(it.toString()) })
+        val taggedEvents = events.mapIndexed { index, event ->
+            JSONObject(event.toString()).put("_authOrder", index)
+        }
+        val real = NetworkDisplayMerger.merge(taggedEvents)
             .filter { it.optString("source", "") != "auth-form-submit" && NetworkEventClassifier.isPlainRequestEvent(it) }
             .filter { it.optString("url", "").startsWith("http://") || it.optString("url", "").startsWith("https://") }
+            .onEach { event ->
+                var firstOrder = event.optInt("_authOrder", Int.MAX_VALUE)
+                var lastOrder = event.optInt("_authOrder", -1)
+                val merged = event.optJSONArray("_mergedEvents")
+                if (merged != null) {
+                    for (index in 0 until merged.length()) {
+                        val order = merged.optJSONObject(index)?.optInt("_authOrder", -1) ?: -1
+                        if (order >= 0) {
+                            if (order < firstOrder) firstOrder = order
+                            if (order > lastOrder) lastOrder = order
+                        }
+                    }
+                }
+                if (firstOrder == Int.MAX_VALUE) firstOrder = lastOrder
+                event.put("_authOrderFirst", firstOrder)
+                event.put("_authOrderLast", lastOrder)
+            }
             .sortedBy { it.optLong("time", 0L) }
             .toMutableList()
+
+        events.withIndex().filter { it.value.optString("source", "") == "auth-page-source" }.forEach { entry ->
+            val page = entry.value
+            val pageOrder = entry.index
+            val pageUrl = page.optString("url", "")
+            val pageTime = page.optLong("time", 0L)
+            val content = page.optString("content", "")
+            if (!pageUrl.startsWith("http") || content.isBlank()) return@forEach
+
+            val candidate = real.withIndex()
+                .filter { entry ->
+                    val event = entry.value
+                    val method = NetworkEventClassifier.methodOf(event).ifBlank { event.optString("method", "GET") }
+                    val eventTime = event.optLong("time", 0L)
+                    method.equals("GET", true) &&
+                        normalizeUrl(event.optString("url", "")) == normalizeUrl(pageUrl) &&
+                        (pageTime <= 0L || eventTime <= 0L || abs(pageTime - eventTime) <= 8000L) &&
+                        !event.optBoolean("_authPageSourceAttached", false)
+                }
+                .minByOrNull { entry ->
+                    val eventTime = entry.value.optLong("time", 0L)
+                    if (pageTime > 0L && eventTime > 0L) abs(pageTime - eventTime) else Long.MAX_VALUE
+                }
+
+            if (candidate != null) {
+                val target = candidate.value
+                target.put("_authPageSourceAttached", true)
+                target.put("_authPageSourceTime", pageTime)
+                val currentFirst = target.optInt("_authOrderFirst", pageOrder)
+                val currentLast = target.optInt("_authOrderLast", pageOrder)
+                target.put("_authOrderFirst", minOf(currentFirst, pageOrder))
+                target.put("_authOrderLast", maxOf(currentLast, pageOrder))
+                if (target.optString("responseBody", "").isBlank()) target.put("responseBody", content)
+                if (target.optString("mimeType", "").isBlank()) target.put("mimeType", "text/html; charset=utf-8")
+            } else {
+                real.add(
+                    JSONObject()
+                        .put("source", "auth-page-source")
+                        .put("time", pageTime)
+                        .put("method", "GET")
+                        .put("url", pageUrl)
+                        .put("status", 200)
+                        .put("mimeType", "text/html; charset=utf-8")
+                        .put("responseBody", content)
+                        .put("_authOrder", pageOrder)
+                        .put("_authOrderFirst", pageOrder)
+                        .put("_authOrderLast", pageOrder)
+                        .put("_authPageSourceSynthetic", true)
+                )
+            }
+        }
 
         hints.forEach { hint ->
             val candidate = real.withIndex().mapNotNull { entry ->
@@ -215,7 +259,19 @@ internal object UniversalAuthAnalyzer {
     }
 
     private fun chooseLogin(nodes: List<Node>, scores: List<Int>): Int {
-        val real = scores.indices.filter { !nodes[it].event.optBoolean("_authSynthetic", false) }
+        val real = scores.indices.filter { !nodes[it].event.optBoolean("_authSynthetic", false) && !isTelemetry(nodes[it]) && !isStatic(nodes[it]) }
+        val password = real.filter { index -> fields(nodes[index].event).any { (key, value) -> isPasswordField(key) && value.isNotBlank() } }
+        if (password.isNotEmpty()) return password.maxByOrNull { scores[it] + if (nodes[it].event.optBoolean("_authFormCorrelated", false)) 8 else 0 } ?: password.first()
+
+        val otp = real.filter { index -> fields(nodes[index].event).keys.any(::isOtpField) }
+        if (otp.isNotEmpty()) return otp.maxByOrNull { scores[it] } ?: otp.first()
+
+        val identity = real.filter { index ->
+            val values = fields(nodes[index].event)
+            nodes[index].method in setOf("POST", "PUT", "PATCH") && values.any { (key, value) -> isLoginField(key) && value.isNotBlank() }
+        }
+        if (identity.isNotEmpty()) return identity.maxByOrNull { scores[it] } ?: identity.first()
+
         val bestReal = real.maxByOrNull { scores[it] }
         if (bestReal != null && scores[bestReal] >= 5) return bestReal
         return scores.indices.maxByOrNull { scores[it] } ?: 0
@@ -244,22 +300,151 @@ internal object UniversalAuthAnalyzer {
 
     private fun isExplicitAuthStep(node: Node): Boolean {
         if (node.event.optBoolean("_authFormCorrelated", false)) return true
-        if (logoutOrRegistration(node.url) || isStatic(node)) return false
-        if (authPath(node.url)) return true
+        if (logoutOrRegistration(node.url) || isStatic(node) || isTelemetry(node)) return false
+        if (authPath(node.url) || authOperation(node)) return true
         val kinds = fields(node.event).keys.mapNotNull(::credentialKind).toSet()
         if (kinds.any { it in setOf("login", "password", "otp", "code_verifier", "code_challenge") }) return true
         if (looksRefresh(node)) return true
-        if (responseTokenKeys(node.event).isNotEmpty()) return true
-        val lower = node.url.lowercase(Locale.US)
-        return listOf(
-            "client_id=",
-            "redirect_uri=",
-            "response_type=",
-            "code_challenge=",
-            "code_verifier=",
-            "samlrequest=",
-            "samlresponse="
-        ).any(lower::contains)
+        return false
+    }
+
+    private fun authOperation(node: Node): Boolean {
+        val query = try { URL(node.url).query.orEmpty() } catch (_: Exception) { "" }
+        if (query.isBlank()) return false
+        val operationKeys = setOf("act", "action", "method", "operation", "op", "flow", "step")
+        return parseUrlEncoded(query).any { (key, value) ->
+            normalizeField(key) in operationKeys && authWord(value)
+        }
+    }
+
+    private fun authWord(value: String): Boolean {
+        val lower = normalizeField(value)
+        return listOf("auth", "login", "signin", "sign_in", "authorize", "token", "session", "sso", "verify", "password", "otp", "mfa", "2fa", "refresh").any(lower::contains)
+    }
+
+    private fun expandCausalSelection(
+        nodes: List<Node>,
+        producers: List<Producer>,
+        selected: MutableSet<Int>,
+        origins: Set<String>
+    ): Pair<MutableList<Binding>, LinkedHashSet<String>> {
+        val bindings = mutableListOf<Binding>()
+        val usedVariables = linkedSetOf<String>()
+        val variableByValue = linkedMapOf<String, String>()
+        var changed = true
+        var pass = 0
+
+        while (changed && pass++ < 40) {
+            changed = false
+
+            selected.toList().sorted().forEach { consumer ->
+                val material = requestMaterial(nodes[consumer].event)
+                val candidates = producers.asSequence()
+                    .filter { it.index < consumer && reusable(it.value) && containsMaterial(material, it.value) }
+                    .filter { it.index < 0 || !isNoise(nodes[it.index], origins) }
+                    .groupBy { it.value }
+
+                candidates.values.forEach { options ->
+                    val producer = options.maxByOrNull { it.index } ?: return@forEach
+                    if (bindings.none { it.consumer == consumer && it.producer.value == producer.value }) {
+                        val variable = variableByValue[producer.value] ?: run {
+                            val created = uniqueVariable(canonicalVariable(producer.key), usedVariables)
+                            usedVariables.add(created)
+                            variableByValue[producer.value] = created
+                            created
+                        }
+                        bindings.add(Binding(producer, consumer, variable))
+                    }
+                    if (producer.index >= 0 && selected.add(producer.index)) changed = true
+                }
+            }
+
+            selected.toList().sorted().forEach { sourceIndex ->
+                val source = nodes[sourceIndex]
+                val limitTime = if (source.time > 0L) source.time + 120_000L else Long.MAX_VALUE
+
+                producers.asSequence()
+                    .filter { it.index == sourceIndex && reusable(it.value) }
+                    .forEach { producer ->
+                        for (index in sourceIndex + 1..nodes.lastIndex) {
+                            val candidate = nodes[index]
+                            if (candidate.time > 0L && candidate.time > limitTime) break
+                            if (isNoise(candidate, origins) || !isExplicitAuthStep(candidate)) continue
+                            if (containsMaterial(requestMaterial(candidate.event), producer.value) || stepTransitionMatches(producer, candidate)) {
+                                if (selected.add(index)) changed = true
+                            }
+                        }
+                    }
+
+                val navigationIndex = findNextNavigationTarget(nodes, sourceIndex, navigationTargets(source), origins)
+                if (navigationIndex != null && selected.add(navigationIndex)) changed = true
+            }
+        }
+
+        return bindings to usedVariables
+    }
+
+    private fun stepTransitionMatches(producer: Producer, node: Node): Boolean {
+        val key = normalizeField(producer.key)
+        if (!(key.contains("next") || key.contains("step") || key.contains("flow") || key.contains("action"))) return false
+        val value = normalizeField(producer.value)
+        if (value.length < 6 || value.length > 100) return false
+        val route = normalizeField(try { URL(node.url).path } catch (_: Exception) { node.url.substringBefore('?') })
+        return route.contains(value) || value.contains(route.takeIf { it.length >= 6 } ?: return false)
+    }
+
+    private fun findNextNavigationTarget(nodes: List<Node>, sourceIndex: Int, targets: List<String>, origins: Set<String>): Int? {
+        if (targets.isEmpty()) return null
+        val source = nodes[sourceIndex]
+        val sourceTime = source.time
+        val sourceOrder = source.event.optInt("_authOrderLast", source.event.optInt("_authOrder", -1))
+        val minTime = if (sourceTime > 0L) sourceTime - 2_000L else Long.MIN_VALUE
+        val maxTime = if (sourceTime > 0L) sourceTime + 120_000L else Long.MAX_VALUE
+        var best: Int? = null
+        var bestOrderDistance = Int.MAX_VALUE
+        var bestTimeDistance = Long.MAX_VALUE
+
+        nodes.indices.forEach { index ->
+            if (index == sourceIndex) return@forEach
+            val candidate = nodes[index]
+            val candidateOrder = candidate.event.optInt("_authOrderLast", candidate.event.optInt("_authOrder", -1))
+            if (sourceOrder >= 0 && candidateOrder >= 0 && candidateOrder <= sourceOrder) return@forEach
+            if (candidate.time > 0L && (candidate.time < minTime || candidate.time > maxTime)) return@forEach
+            if (isStatic(candidate) || isTelemetry(candidate) || logoutOrRegistration(candidate.url)) return@forEach
+            if (targets.none { target -> navigationTargetMatches(target, candidate.url) }) return@forEach
+
+            val orderDistance = if (sourceOrder >= 0 && candidateOrder >= 0) candidateOrder - sourceOrder else Int.MAX_VALUE
+            val timeDistance = if (sourceTime > 0L && candidate.time > 0L) {
+                val delta = candidate.time - sourceTime
+                if (delta >= 0L) delta else 2_000L + -delta
+            } else {
+                kotlin.math.abs(index - sourceIndex).toLong()
+            }
+
+            if (
+                orderDistance < bestOrderDistance ||
+                (orderDistance == bestOrderDistance && timeDistance < bestTimeDistance)
+            ) {
+                bestOrderDistance = orderDistance
+                bestTimeDistance = timeDistance
+                best = index
+            }
+        }
+        return best
+    }
+
+    private fun navigationTargetMatches(target: String, actual: String): Boolean {
+        if (target.isBlank() || actual.isBlank()) return false
+        if (normalizeUrl(target) == normalizeUrl(actual)) return true
+        return routeKey(target).isNotBlank() && routeKey(target) == routeKey(actual)
+    }
+
+    private fun routeKey(raw: String): String = try {
+        val url = URL(raw)
+        val port = if (url.port > 0 && url.port != url.defaultPort) ":${url.port}" else ""
+        "${url.protocol.lowercase(Locale.US)}://${url.host.lowercase(Locale.US)}$port${url.path.ifBlank { "/" }}"
+    } catch (_: Exception) {
+        raw.substringBefore('?').substringBefore('#')
     }
 
     private fun addPrepareRequest(nodes: List<Node>, hints: List<Hint>, loginIndex: Int, selected: MutableSet<Int>, origins: Set<String>) {
@@ -343,31 +528,170 @@ internal object UniversalAuthAnalyzer {
         return if (bestScore >= 8) best else null
     }
 
+    private fun navigationTargets(node: Node): List<String> {
+        val out = linkedSetOf<String>()
+
+        fun resolve(raw: String): String? {
+            var value = raw.trim().trim('"', '\'', ' ')
+            value = value.replace("&amp;", "&").replace("&#38;", "&")
+            if (value.isBlank()) return null
+            repeat(2) { value = decode(value) }
+            return try {
+                val resolved = URL(URL(node.url), value).toString()
+                if (resolved.startsWith("http://") || resolved.startsWith("https://")) resolved else null
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        fun add(raw: String) {
+            resolve(raw)?.let(out::add)
+        }
+
+        fun scanDeclared(rawUrl: String, depth: Int) {
+            if (depth > 2) return
+            val url = try { URL(rawUrl) } catch (_: Exception) { return }
+            val allowed = setOf("redirect_uri", "redirect_url", "return_url", "return", "continue", "continue_url", "next", "next_url", "callback", "callback_url", "from", "to")
+            parseUrlEncoded(url.query.orEmpty()).forEach { (key, rawValue) ->
+                if (normalizeField(key) !in allowed) return@forEach
+                var value = rawValue
+                repeat(2) { value = decode(value) }
+                val resolved = resolve(value) ?: return@forEach
+                out.add(resolved)
+                scanDeclared(resolved, depth + 1)
+            }
+        }
+
+        node.event.optString("redirectURL", "").takeIf { it.isNotBlank() }?.let(::add)
+        responseHeaders(node.event).firstOrNull { it.first.equals("Location", true) }?.second?.let(::add)
+
+        val body = responseBody(node.event)
+        if (body.isNotBlank() && body.length <= 2_000_000) {
+            if (body.trimStart().startsWith("{") || body.trimStart().startsWith("[")) {
+                try {
+                    val parsed: Any = if (body.trimStart().startsWith("{")) JSONObject(body) else JSONArray(body)
+                    collectNavigationJson(parsed, node.url, out)
+                } catch (_: Exception) {}
+            }
+
+            Regex("<meta\\b[^>]*>", RegexOption.IGNORE_CASE).findAll(body).take(100).forEach { match ->
+                val attrs = htmlAttributes(match.value)
+                if (!attrs["http-equiv"].orEmpty().equals("refresh", true)) return@forEach
+                val content = attrs["content"].orEmpty()
+                val target = Regex("(?i)url\\s*=\\s*['\"]?([^'\";]+)").find(content)?.groupValues?.getOrNull(1).orEmpty()
+                if (target.isNotBlank()) add(target)
+            }
+
+            if (body.length <= 50_000) {
+                Regex("(?i)(?:window\\.)?location(?:\\.href)?\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { add(it.groupValues[1]) }
+                Regex("(?i)\\b(?:redirect|next|return|continue)[A-Za-z0-9_]*URL\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { add(it.groupValues[1]) }
+            }
+        }
+
+        scanDeclared(node.url, 0)
+        return out.toList()
+    }
+
+    private fun collectNavigationJson(value: Any?, baseUrl: String, out: MutableSet<String>) {
+        when (value) {
+            is JSONObject -> {
+                val keys = value.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val child = value.opt(key)
+                    if (child != null && child != JSONObject.NULL && navigationKey(key)) {
+                        resolveNavigationUrl(baseUrl, child.toString())?.let(out::add)
+                    }
+                    collectNavigationJson(child, baseUrl, out)
+                }
+            }
+            is JSONArray -> for (index in 0 until minOf(value.length(), 100)) collectNavigationJson(value.opt(index), baseUrl, out)
+        }
+    }
+
+    private fun navigationKey(key: String): Boolean {
+        val value = normalizeField(key)
+        return value in setOf("location", "redirect", "redirect_url", "redirect_uri", "return_url", "continue_url", "callback_url", "next_url", "next_step_url") ||
+            ((value.contains("redirect") || value.contains("next") || value.contains("callback") || value.contains("continue") || value.contains("return")) && (value.contains("url") || value.contains("uri")))
+    }
+
+    private fun resolveNavigationUrl(baseUrl: String, raw: String): String? {
+        var value = raw.trim().trim('"', '\'', ' ').replace("&amp;", "&").replace("&#38;", "&")
+        repeat(2) { value = decode(value) }
+        return try {
+            val resolved = URL(URL(baseUrl), value).toString()
+            if (resolved.startsWith("http://") || resolved.startsWith("https://")) resolved else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun collectProducers(nodes: List<Node>, hints: List<Hint>): List<Producer> {
         val out = mutableListOf<Producer>()
-        hints.forEach { hint -> hint.fields.forEach { (key, value) -> if (value.isNotBlank() && value !in setOf("[password]", "[file]") && (interestingKey(key) || tokenLike(value))) out.add(Producer(-1, key, value, "html")) } }
+        hints.forEach { hint ->
+            hint.fields.forEach { (key, value) ->
+                if (value.isNotBlank() && value !in setOf("[password]", "[file]") && (interestingKey(key) || tokenLike(value))) {
+                    out.add(Producer(-1, key, value, "html"))
+                }
+            }
+        }
+
         nodes.forEachIndexed { index, node ->
             val body = responseBody(node.event).trim()
-            if (body.startsWith("{") || body.startsWith("[")) try {
-                val parsed: Any = if (body.startsWith("{")) JSONObject(body) else JSONArray(body)
-                collectJson(parsed, emptyList(), index, out)
-            } catch (_: Exception) {}
+            if (body.startsWith("{") || body.startsWith("[")) {
+                try {
+                    val parsed: Any = if (body.startsWith("{")) JSONObject(body) else JSONArray(body)
+                    collectJson(parsed, emptyList(), index, out)
+                } catch (_: Exception) {}
+            }
+
             if (body.isNotBlank() && body.length <= 2_000_000) {
                 Regex("<input\\b[^>]*>", RegexOption.IGNORE_CASE).findAll(body).take(100).forEach { match ->
                     val attrs = htmlAttributes(match.value)
                     val key = attrs["name"].orEmpty()
                     val value = attrs["value"].orEmpty()
-                    if (key.isNotBlank() && value.isNotBlank() && (interestingKey(key) || tokenLike(value))) out.add(Producer(index, key, value, "html"))
+                    if (key.isNotBlank() && value.isNotBlank() && (interestingKey(key) || tokenLike(value))) {
+                        out.add(Producer(index, key, value, "html"))
+                    }
+                }
+
+                Regex("<meta\\b[^>]*>", RegexOption.IGNORE_CASE).findAll(body).take(100).forEach { match ->
+                    val attrs = htmlAttributes(match.value)
+                    if (!attrs["http-equiv"].orEmpty().equals("refresh", true)) return@forEach
+                    val raw = Regex("(?i)url\\s*=\\s*['\"]?([^'\";]+)").find(attrs["content"].orEmpty())?.groupValues?.getOrNull(1).orEmpty()
+                    val target = resolveNavigationUrl(node.url, raw) ?: return@forEach
+                    out.add(Producer(index, "redirect_url", target, "html-redirect"))
+                }
+
+                if (body.length <= 50_000) {
+                    Regex("(?i)(?:window\\.)?location(?:\\.href)?\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { match ->
+                        resolveNavigationUrl(node.url, match.groupValues[1])?.let { target ->
+                            out.add(Producer(index, "redirect_url", target, "html-redirect"))
+                        }
+                    }
+
+                    Regex("(?i)\\b(?:redirect|next|return|continue)[A-Za-z0-9_]*URL\\s*=\\s*['\"]([^'\"]+)['\"]").findAll(body).take(50).forEach { match ->
+                        resolveNavigationUrl(node.url, match.groupValues[1])?.let { target ->
+                            out.add(Producer(index, "redirect_url", target, "html-redirect"))
+                        }
+                    }
                 }
             }
+
             responseHeaders(node.event).forEach { (name, value) ->
                 val lower = name.lowercase(Locale.US)
                 if (lower == "set-cookie") return@forEach
-                if (lower == "location") try {
-                    val location = URL(URL(node.url), value)
-                    parseUrlEncoded(location.query.orEmpty()).forEach { (key, queryValue) -> if (interestingKey(key) && reusable(queryValue)) out.add(Producer(index, key, queryValue, "location", header = key)) }
-                } catch (_: Exception) {}
-                else if ((lower.contains("token") || lower.contains("csrf") || lower.contains("xsrf") || lower == "authorization") && reusable(value)) out.add(Producer(index, name, value, "header", header = name))
+                if (lower == "location") {
+                    try {
+                        val location = URL(URL(node.url), value)
+                        out.add(Producer(index, "redirect_url", location.toString(), "redirect", header = "Location"))
+                        parseUrlEncoded(location.query.orEmpty()).forEach { (key, queryValue) ->
+                            if (interestingKey(key) && reusable(queryValue)) out.add(Producer(index, key, queryValue, "location", header = key))
+                        }
+                    } catch (_: Exception) {}
+                } else if ((lower.contains("token") || lower.contains("csrf") || lower.contains("xsrf") || lower == "authorization") && reusable(value)) {
+                    out.add(Producer(index, name, value, "header", header = name))
+                }
             }
         }
         return out.distinctBy { "${it.index}|${it.key}|${it.value}|${it.kind}" }
@@ -375,10 +699,21 @@ internal object UniversalAuthAnalyzer {
 
     private fun collectJson(value: Any?, path: List<String>, index: Int, out: MutableList<Producer>) {
         when (value) {
-            is JSONObject -> { val keys = value.keys(); while (keys.hasNext()) { val key = keys.next(); collectJson(value.opt(key), path + key, index, out) } }
+            is JSONObject -> {
+                val keys = value.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    collectJson(value.opt(key), path + key, index, out)
+                }
+            }
             is JSONArray -> for (i in 0 until minOf(value.length(), 100)) collectJson(value.opt(i), path + i.toString(), index, out)
             null, JSONObject.NULL -> Unit
-            else -> if (path.isNotEmpty()) { val text = value.toString(); val key = path.last(); if (interestingKey(key) || tokenLike(text)) out.add(Producer(index, key, text, "json", path)) }
+            else -> if (path.isNotEmpty()) {
+                val text = value.toString()
+                val key = path.last()
+                val navigationValue = navigationKey(key) && (text.startsWith("http://") || text.startsWith("https://") || text.startsWith("/") || text.startsWith("//"))
+                if (interestingKey(key) || tokenLike(text) || navigationValue) out.add(Producer(index, key, text, "json", path))
+            }
         }
     }
 
@@ -556,6 +891,18 @@ internal object UniversalAuthAnalyzer {
                 }
                 "header" -> lines.add("try { const value = pm.response.headers.get(${JSONObject.quote(binding.producer.header)}); if (value) pm.collectionVariables.set($variable, String(value)); } catch (e) {}")
                 "location" -> lines.add("try { const value = new URL(pm.response.headers.get('Location'), pm.request.url.toString()).searchParams.get(${JSONObject.quote(binding.producer.header)}); if (value) pm.collectionVariables.set($variable, value); } catch (e) {}")
+                "redirect" -> lines.add("try { const value = pm.response.headers.get('Location'); if (value) pm.collectionVariables.set($variable, new URL(value, pm.request.url.toString()).toString()); } catch (e) {}")
+                "html-redirect" -> {
+                    lines.add("try {")
+                    lines.add("  const text = pm.response.text();")
+                    lines.add("  let raw = null;")
+                    lines.add("  const meta = text.match(/<meta\\b[^>]*http-equiv=[\\\"']?refresh[\\\"']?[^>]*content=[\\\"'][^\\\"']*url\\s*=\\s*[\\\"']?([^\\\"';>]+)[^>]*>/i) || text.match(/<meta\\b[^>]*content=[\\\"'][^\\\"']*url\\s*=\\s*[\\\"']?([^\\\"';>]+)[^>]*http-equiv=[\\\"']?refresh[\\\"']?[^>]*>/i);")
+                    lines.add("  const direct = text.match(/(?:window\\.)?location(?:\\.href)?\\s*=\\s*[\\\"']([^\\\"']+)[\\\"']/i);")
+                    lines.add("  const named = text.match(/\\b(?:redirect|next|return|continue)[A-Za-z0-9_]*URL\\s*=\\s*[\\\"']([^\\\"']+)[\\\"']/i);")
+                    lines.add("  raw = (meta && meta[1]) || (direct && direct[1]) || (named && named[1]);")
+                    lines.add("  if (raw) { raw = raw.replace(/&amp;/g, '&').replace(/&#38;/g, '&'); pm.collectionVariables.set($variable, new URL(raw, pm.request.url.toString()).toString()); }")
+                    lines.add("} catch (e) {}")
+                }
                 "html" -> {
                     lines.add("try {")
                     lines.add("  const text = pm.response.text();")
@@ -574,8 +921,22 @@ internal object UniversalAuthAnalyzer {
     private fun role(index: Int, login: Int, verify: Int?, node: Node): String = when { index == login -> "Login"; index == verify -> "Verify authenticated session"; looksRefresh(node) -> "Refresh / token renewal"; index < login -> "Prepare / auth dependency"; hasCredentials(node.event) -> "Authentication step"; else -> "Auth dependency" }
 
     private fun dedupe(nodes: List<Node>, selected: Set<Int>): List<Int> {
-        val seen = linkedSetOf<String>(); val out = mutableListOf<Int>()
-        selected.sorted().forEach { index -> val node = nodes[index]; val body = node.event.optString("requestBody", ""); val fingerprint = if (body.length <= 200) body else body.take(100) + "#" + body.length + "#" + body.takeLast(80); if (seen.add("${node.method}|${normalizeUrl(node.url)}|$fingerprint")) out.add(index) }
+        val seen = linkedSetOf<String>()
+        val out = mutableListOf<Int>()
+        selected.sorted().forEach { index ->
+            val node = nodes[index]
+            val requestBody = node.event.optString("requestBody", "")
+            val requestFingerprint = if (requestBody.length <= 200) requestBody else requestBody.take(100) + "#" + requestBody.length + "#" + requestBody.takeLast(80)
+            val responseBody = responseBody(node.event)
+            val responseFingerprint = when {
+                node.event.optString("redirectURL", "").isNotBlank() -> node.event.optString("redirectURL", "")
+                responseHeaders(node.event).any { it.first.equals("Location", true) } -> responseHeaders(node.event).first { it.first.equals("Location", true) }.second
+                responseBody.isNotBlank() -> responseBody.take(80) + "#" + responseBody.length + "#" + responseBody.takeLast(60)
+                else -> ""
+            }
+            val key = "${node.method}|${normalizeUrl(node.url)}|$requestFingerprint|$responseFingerprint"
+            if (seen.add(key)) out.add(index)
+        }
         return out
     }
 
@@ -600,14 +961,30 @@ internal object UniversalAuthAnalyzer {
         return listOf(".css", ".js", ".mjs", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".map", ".mp4", ".webm", ".mp3").any(path::endsWith)
     }
 
-    private fun documentLike(node: Node): Boolean = node.source == "navigation" || (node.method == "GET" && NetworkEventClassifier.responseKind(node.event) in setOf("HTML", "TEXT", "OTHER"))
-    private fun isTelemetry(node: Node): Boolean { val path = try { URL(node.url).path.lowercase(Locale.US) } catch (_: Exception) { node.url.lowercase(Locale.US) }; return listOf("/collect", "/analytics", "/telemetry", "/metrics", "/metric/", "/pixel", "/watch/", "/track", "/counter", "/beacon").any(path::contains) || node.source == "beacon" }
+    private fun documentLike(node: Node): Boolean =
+        node.source in setOf("navigation", "new-window", "auth-page-source") ||
+            node.event.optBoolean("_authPageSourceSynthetic", false) ||
+            node.event.optBoolean("_authPageSourceAttached", false) ||
+            (node.method == "GET" && NetworkEventClassifier.responseKind(node.event) == "HTML")
+
+    private fun isTelemetry(node: Node): Boolean {
+        if (node.source == "beacon") return true
+        val lower = node.url.lowercase(Locale.US)
+        val path = try { URL(node.url).path.lowercase(Locale.US) } catch (_: Exception) { lower.substringBefore('?') }
+        val requestType = requestHeaders(node.event).firstOrNull { it.first.equals("Content-Type", true) }?.second.orEmpty().lowercase(Locale.US)
+        if (requestType.contains("csp-report") || requestType.contains("report-to")) return true
+        return listOf(
+            "/collect", "/analytics", "/telemetry", "/metrics", "/metric/", "/pixel", "/watch/", "/track", "/counter", "/beacon",
+            "statevents.", "/xray/", "/utils/xray/", "radar.", "tracksession", "subscribecommonqueue", "cspreport", "/csp-report"
+        ).any { lower.contains(it) || path.contains(it) }
+    }
+
     private fun isCrossOriginAuthBridge(node: Node): Boolean {
         if (isStatic(node) || isTelemetry(node)) return false
         val lower = node.url.lowercase(Locale.US)
-        if (authPath(node.url) && (node.method in setOf("POST", "PUT", "PATCH") || hasCredentials(node.event))) return true
-        if (listOf("client_id=", "redirect_uri=", "response_type=", "code_challenge=", "samlrequest=", "samlresponse=").any(lower::contains)) return true
-        return responseTokenKeys(node.event).isNotEmpty() || requestHeaders(node.event).any { it.first.equals("Authorization", true) && it.second.isNotBlank() }
+        if ((authPath(node.url) || authOperation(node)) && (node.method in setOf("POST", "PUT", "PATCH") || hasCredentials(node.event) || responseTokenKeys(node.event).isNotEmpty())) return true
+        if (listOf("redirect_uri=", "response_type=", "code_challenge=", "code_verifier=", "samlrequest=", "samlresponse=").any(lower::contains)) return true
+        return requestHeaders(node.event).any { it.first.equals("Authorization", true) && it.second.isNotBlank() }
     }
     private fun looksLikeLoginResponse(event: JSONObject, url: String): Boolean { val body = responseBody(event).lowercase(Locale.US); if (body.isBlank()) return false; val password = body.contains("type=\"password\"") || body.contains("type='password'") || body.contains("name=\"password\"") || body.contains("name='password'"); return password && (authPath(url) || body.contains("login") || body.contains("signin") || body.contains("username")) }
     private fun looksRefresh(node: Node): Boolean { val lower = node.url.lowercase(Locale.US); return lower.contains("refresh") || fields(node.event).keys.any { normalizeField(it).contains("refresh_token") || normalizeField(it) == "refresh" } }
