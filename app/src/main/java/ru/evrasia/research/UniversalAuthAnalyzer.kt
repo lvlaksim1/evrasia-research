@@ -5,6 +5,7 @@ import org.json.JSONObject
 import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.util.Base64
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
@@ -24,6 +25,7 @@ internal object UniversalAuthAnalyzer {
     )
     private data class ForwardSelection(val indices: List<Int>, val edges: List<CausalEdge>)
     private data class VariableDef(val key: String, val value: String, val description: String)
+    private data class DerivedRule(val captured: String, val variable: String, val depth: Int)
 
     fun analyze(
         events: List<JSONObject>,
