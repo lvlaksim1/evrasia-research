@@ -176,6 +176,214 @@ class UniversalAuthAnalyzerReplayTest {
         assertFalse(environmentText.contains("old-captured-value"))
     }
 
+
+    @Test
+    fun reconstructsReplayableFlowFromFullCaptureShape() {
+        val login = "user@example.test"
+        val challenge = "challenge_actual_full_abcdefghijklmnopqrstuvwxyz"
+        val copiedChallenge = "challenge_copy_full_abcdefghijklmnopqrstuvwxyz"
+        val state = "state_actual_full_abcdefghijklmnopqrstuvwxyz"
+        val copiedState = "state_copy_full_abcdefghijklmnopqrstuvwxyz"
+        val oid = "OID_FULL_abcdefghijklmnopqrstuvwxyz"
+        val copiedOid = "OID_COPY_FULL_abcdefghijklmnopqrstuvwxyz"
+        val device = "DeviceId_full_abcdefgh"
+        val anonymous = "anonymous_full_abcdefghijklmnopqrstuvwxyz123456"
+        val authToken = "auth_token_full_abcdefghijklmnopqrstuvwxyz123456"
+        val sid = "sid_full_abcdefghijklmnopqrstuvwxyz123456"
+
+        val action = base64Json(
+            JSONObject()
+                .put("name", "mail_auth")
+                .put("params", JSONObject().put("mail_auth_type", "auth_login_page"))
+        )
+        val appSettings = base64Json(JSONObject().put("service_groups", JSONObject().put("oid", oid)))
+        val copiedAppSettings = base64Json(JSONObject().put("service_groups", JSONObject().put("oid", copiedOid)))
+
+        val accountUrl = "https://account.test/login?success_redirect=https%3A%2F%2Ftouch.test%2Fmessages&from=main_touch"
+        val idUrl = idUrl(action, appSettings, challenge, state)
+        val copiedIdUrl = idUrl(action, copiedAppSettings, copiedChallenge, copiedState)
+        val copiedAfterAuthIdUrl = idUrl(action, copiedAppSettings, "post_auth_$copiedChallenge", "post_auth_$copiedState")
+        val pageSource = "window.init=" + JSONObject()
+            .put("auth", JSONObject().put("access_token", authToken).put("anonymous_token", anonymous))
+            .toString() + ";"
+
+        val silentBase = "https://auth.test/api/v1/vkid_auth/silent/grey_login"
+        val toDecoded = silentBase +
+            "?state=" + state +
+            "&from=" + encode(encode(idUrl)) +
+            "&email=" + encode(login)
+        val to = Base64.getEncoder().encodeToString(toDecoded.toByteArray(Charsets.UTF_8))
+        val nextUrl = silentBase +
+            "?state=" + state +
+            "&from=" + encode(idUrl) +
+            "&email=" + encode(login) +
+            "&payload=fresh_payload_from_connect_response"
+        val touchUrl = "https://touch.test/messages?afterRedir=1"
+        val trackingUrl = "https://trk.test/c/puzcp2"
+        val inboxUrl = "https://mailbox.test/inbox?fromTouch=1"
+
+        val events = mutableListOf<JSONObject>()
+        events.add(event("webview", 1000, "GET", accountUrl, 0))
+        events.add(event("webview", 1001, "GET", accountUrl, 0))
+        events.add(event("navigation", 1005, "GET", "https://portal.test/", 0))
+        events.add(event("navigation", 1020, "GET", idUrl, 0))
+        events.add(event("navigation", 1021, "GET", idUrl, 0))
+        events.add(
+            JSONObject()
+                .put("source", "auth-page-source")
+                .put("time", 1022)
+                .put("method", "GET")
+                .put("url", idUrl)
+                .put("content", pageSource)
+        )
+        events.add(
+            event("resource-copy", 1030, "GET", accountUrl, 200)
+                .put("redirectURL", copiedIdUrl)
+        )
+        events.add(
+            JSONObject()
+                .put("source", "auth-form-submit")
+                .put("time", 1040)
+                .put("page", idUrl)
+                .put("url", idUrl)
+                .put("method", "GET")
+                .put("requestMimeType", "application/x-www-form-urlencoded")
+                .put("requestBody", "save_user=on")
+                .put("formFields", JSONArray().put(JSONObject().put("name", "save_user").put("value", "on")))
+        )
+        events.add(
+            event("webview", 1050, "POST", "https://api.test/method/auth.validateAccount?v=5.280&client_id=7539952", 200)
+                .put("requestMimeType", "application/x-www-form-urlencoded")
+                .put(
+                    "requestBody",
+                    form(
+                        "login" to login,
+                        "client_id" to "7539952",
+                        "device_id" to device,
+                        "mail_token" to state,
+                        "oid" to oid,
+                        "code_challenge" to challenge,
+                        "code_challenge_method" to "S256",
+                        "anonymous_token" to anonymous
+                    )
+                )
+                .put("responseBody", response("sid", sid))
+        )
+        events.add(
+            event("webview", 1060, "GET", "https://account.test/login?deepLink=password", 200)
+                .put("responseHeaders", JSONObject().put("Set-Cookie", "oid=$oid; Path=/; Domain=account.test"))
+        )
+        events.add(
+            JSONObject()
+                .put("source", "auth-form-submit")
+                .put("time", 1070)
+                .put("page", idUrl)
+                .put("url", idUrl)
+                .put("method", "GET")
+                .put("requestMimeType", "application/x-www-form-urlencoded")
+                .put("requestBody", form("username" to login, "password" to "[password]"))
+                .put(
+                    "formFields",
+                    JSONArray()
+                        .put(JSONObject().put("name", "username").put("value", login))
+                        .put(JSONObject().put("name", "password").put("value", "[password]"))
+                )
+        )
+        events.add(
+            event("webview", 1080, "POST", "https://api.test/method/vkidmail.checkPassword?v=5.280&client_id=7539952", 200)
+                .put("requestMimeType", "application/x-www-form-urlencoded")
+                .put("requestBody", form("sid" to sid, "password" to "[password]", "anonymous_token" to anonymous))
+                .put("responseBody", response("next_step", "on_success_validation"))
+        )
+        events.add(
+            event("webview", 1090, "POST", "https://api.test/method/auth.onSuccessValidation?v=5.280&client_id=7539952", 200)
+                .put("requestMimeType", "application/x-www-form-urlencoded")
+                .put("requestBody", form("sid" to sid, "anonymous_token" to anonymous))
+                .put("responseBody", response("next_step", "mailru_mimicry_get_silent_token"))
+        )
+        events.add(
+            event("webview", 1100, "POST", "https://login.test/?act=connect_authorize", 200)
+                .put("requestMimeType", "application/x-www-form-urlencoded")
+                .put(
+                    "requestBody",
+                    form(
+                        "auth_token" to authToken,
+                        "sid" to sid,
+                        "device_id" to device,
+                        "service_group" to "oid_$oid",
+                        "oauth_state" to state,
+                        "to" to to,
+                        "app_id" to "7539952"
+                    )
+                )
+                .put("responseBody", response("next_step_url", nextUrl))
+        )
+        events.add(
+            event("webview", 1110, "GET", nextUrl, 200)
+                .put("redirectURL", copiedAfterAuthIdUrl)
+        )
+        events.add(
+            JSONObject()
+                .put("source", "auth-page-source")
+                .put("time", 1120)
+                .put("method", "GET")
+                .put("url", touchUrl)
+                .put("content", "<script>window.location=" + JSONObject.quote(trackingUrl) + ";</script>")
+        )
+        events.add(
+            event("webview", 1130, "GET", trackingUrl, 200)
+                .put("redirectURL", inboxUrl)
+                .put("responseHeaders", JSONObject().put("Set-Cookie", "session=fresh-authenticated-session; Path=/; HttpOnly"))
+        )
+        events.add(event("webview", 1140, "GET", inboxUrl, 0))
+        events.add(event("webview", 1150, "GET", "https://metrics.test/collect", 204))
+        events.add(event("webview", 1200, "GET", "https://auth.test/cgi-bin/logout", 200))
+
+        val before = state(accountUrl, "")
+        val after = state(inboxUrl, "session=fresh-authenticated-session")
+        val result = UniversalAuthAnalyzer.analyze(events, before, after)
+        val validation = PostmanReplayabilityValidator.validate(result.collectionJson)
+        assertTrue(validation.issues.joinToString("\n"), validation.ok)
+
+        val collection = JSONObject(result.collectionJson)
+        val items = collection.getJSONArray("item")
+        val text = collection.toString()
+
+        assertTrue("full-shape replay must start at account login", requestUrl(items.getJSONObject(0).getJSONObject("request")).contains("account.test/login"))
+        assertTrue(text.contains("auth.validateAccount"))
+        assertTrue(text.contains("vkidmail.checkPassword"))
+        assertTrue(text.contains("auth.onSuccessValidation"))
+        assertTrue(text.contains("connect_authorize"))
+        assertTrue(text.contains("grey_login"))
+        assertFalse("captured copied challenge must never be replayed", text.contains(copiedChallenge))
+        assertFalse("captured copied state must never be replayed", text.contains(copiedState))
+        assertFalse("post-auth copied challenge must never re-enter AUTH", text.contains("post_auth_$copiedChallenge"))
+        assertFalse("logout must not be included", text.contains("cgi-bin/logout"))
+        assertFalse("telemetry must not be included", text.contains("metrics.test/collect"))
+
+        for (index in 0 until items.length()) {
+            val request = items.getJSONObject(index).getJSONObject("request")
+            if (request.optString("method", "").equals("GET", true)) {
+                assertFalse("GET step contains body: " + requestUrl(request), request.has("body"))
+            }
+        }
+
+        val validate = (0 until items.length())
+            .map { items.getJSONObject(it).getJSONObject("request") }
+            .first { requestUrl(it).contains("auth.validateAccount") }
+            .optJSONObject("body")
+            .toString()
+        assertTrue(validate.contains("{{login}}"))
+        assertFalse(validate.contains("{{email}}"))
+        assertFalse(validate.contains(login))
+        assertFalse(validate.contains(device))
+
+        val environment = PostmanEnvironmentSnapshotSafe.build(result.collectionJson, events, pageSource)
+        assertFalse(environment.contains(device))
+        assertFalse(environment.contains(to))
+        assertFalse(environment.contains("fresh-authenticated-session"))
+    }
+
     private fun assertTemplateField(bodyJson: String, key: String, captured: String) {
         val body = JSONObject(bodyJson)
         val values = when (body.optString("mode", "")) {
