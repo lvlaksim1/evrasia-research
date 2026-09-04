@@ -38,11 +38,14 @@ internal object PostmanReplayabilityValidator {
 
             val producedAt = linkedMapOf<String, Int>()
             val producedPerStep = mutableListOf<Set<String>>()
+            val preProducedPerStep = mutableListOf<Set<String>>()
             for (index in 0 until items.length()) {
                 val item = items.optJSONObject(index) ?: continue
-                val produced = producedVariables(item)
+                val preProduced = scriptProducedVariables(item, "prerequest")
+                val produced = scriptProducedVariables(item, "test")
+                preProducedPerStep.add(preProduced)
                 producedPerStep.add(produced)
-                produced.forEach { key -> producedAt.putIfAbsent(key, index) }
+                (preProduced + produced).forEach { key -> producedAt.putIfAbsent(key, index) }
             }
 
             val producedBefore = linkedSetOf<String>()
@@ -54,9 +57,10 @@ internal object PostmanReplayabilityValidator {
                     issues.add("Step ${index + 1} GET request contains a body")
                 }
 
+                val preProduced = preProducedPerStep.getOrElse(index) { emptySet() }
                 val used = requestVariables(request)
                 used.forEach { key ->
-                    if (key in userInputs || key in staticValues || key in producedBefore) return@forEach
+                    if (key in userInputs || key in staticValues || key in producedBefore || key in preProduced) return@forEach
                     val producer = producedAt[key]
                     when {
                         producer == index -> issues.add("Step ${index + 1} consumes {{$key}} produced only by its own response")
@@ -66,6 +70,7 @@ internal object PostmanReplayabilityValidator {
                         else -> issues.add("Step ${index + 1} consumes {{$key}} without an earlier producer or explicit user/static input")
                     }
                 }
+                producedBefore.addAll(preProduced)
                 producedBefore.addAll(producedPerStep.getOrElse(index) { emptySet() })
             }
 
@@ -86,6 +91,7 @@ internal object PostmanReplayabilityValidator {
     private fun isRuntimeDynamic(description: String): Boolean =
         description.contains("Automatically extracted from an earlier AUTH response", true) ||
             description.contains("Dynamically extracted AUTH value", true) ||
+            description.contains("Generated locally", true) ||
             description.contains("UNRESOLVED", true)
 
     private fun environmentValues(json: String): Map<String, String> {
@@ -132,16 +138,18 @@ internal object PostmanReplayabilityValidator {
         }
     }
 
-    private fun producedVariables(item: JSONObject): Set<String> {
+    private fun producedVariables(item: JSONObject): Set<String> = scriptProducedVariables(item, "test")
+
+    private fun scriptProducedVariables(item: JSONObject, listen: String): Set<String> {
         val out = linkedSetOf<String>()
         val events = item.optJSONArray("event") ?: return out
         for (eventIndex in 0 until events.length()) {
             val event = events.optJSONObject(eventIndex) ?: continue
-            if (event.optString("listen", "") != "test") continue
+            if (event.optString("listen", "") != listen) continue
             val exec = event.optJSONObject("script")?.optJSONArray("exec") ?: continue
             for (lineIndex in 0 until exec.length()) {
                 val line = exec.optString(lineIndex, "")
-                Regex("pm\\.collectionVariables\\.set\\(\\s*[\'\"]([^\'\"]+)[\'\"]").findAll(line).forEach { match ->
+                Regex("pm\\.collectionVariables\\.set\\(\\s*['\"]([^'\"]+)['\"]").findAll(line).forEach { match ->
                     out.add(match.groupValues[1])
                 }
             }
