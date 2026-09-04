@@ -49,6 +49,12 @@ class WebResearchV10Activity : AppCompatActivity() {
     internal fun researchArchive(): ResearchArchive = archive
     internal fun researchUserAgent(): String = if (::userAgent.isInitialized) userAgent else ""
     internal fun captureResearchSnapshot() { if (::captureController.isInitialized) captureController.capturePageSnapshot() }
+    internal fun clearResearchSession() {
+        archive.clear()
+        NetworkDebugStore.clear()
+        if (::captureController.isInitialized) captureController.clearPending()
+        updateBadge()
+    }
 
     private lateinit var palette: WebUiTheme.Palette
     private lateinit var web: WebView
@@ -330,14 +336,6 @@ class WebResearchV10Activity : AppCompatActivity() {
             }
 
             addSection("ИССЛЕДОВАНИЕ")
-            addMenuRow("○", "Очистить текущую сессию", "События, JS, ресурсы и сетевой журнал") {
-                archive.clear()
-                NetworkDebugStore.clear()
-                if (::captureController.isInitialized) captureController.clearPending()
-                updateBadge()
-                Toast.makeText(this@WebResearchV10Activity, "Текущая сессия очищена", Toast.LENGTH_SHORT).show()
-                dialog.dismiss()
-            }
             addMenuRow("⇩", "Экспорт ZIP", "Полный архив исследования") {
                 dialog.dismiss()
                 showExportSheet()
