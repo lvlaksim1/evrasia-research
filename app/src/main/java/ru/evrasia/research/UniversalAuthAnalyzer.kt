@@ -188,7 +188,19 @@ internal object UniversalAuthAnalyzer {
     }
 
     private fun chooseLogin(nodes: List<Node>, scores: List<Int>): Int {
-        val real = scores.indices.filter { !nodes[it].event.optBoolean("_authSynthetic", false) }
+        val real = scores.indices.filter { !nodes[it].event.optBoolean("_authSynthetic", false) && !isTelemetry(nodes[it]) && !isStatic(nodes[it]) }
+        val password = real.filter { index -> fields(nodes[index].event).keys.any(::isPasswordField) }
+        if (password.isNotEmpty()) return password.maxByOrNull { scores[it] + if (nodes[it].event.optBoolean("_authFormCorrelated", false)) 8 else 0 } ?: password.first()
+
+        val otp = real.filter { index -> fields(nodes[index].event).keys.any(::isOtpField) }
+        if (otp.isNotEmpty()) return otp.maxByOrNull { scores[it] } ?: otp.first()
+
+        val identity = real.filter { index ->
+            val keys = fields(nodes[index].event).keys
+            nodes[index].method in setOf("POST", "PUT", "PATCH") && keys.any(::isLoginField)
+        }
+        if (identity.isNotEmpty()) return identity.maxByOrNull { scores[it] } ?: identity.first()
+
         val bestReal = real.maxByOrNull { scores[it] }
         if (bestReal != null && scores[bestReal] >= 5) return bestReal
         return scores.indices.maxByOrNull { scores[it] } ?: 0
@@ -217,22 +229,26 @@ internal object UniversalAuthAnalyzer {
 
     private fun isExplicitAuthStep(node: Node): Boolean {
         if (node.event.optBoolean("_authFormCorrelated", false)) return true
-        if (logoutOrRegistration(node.url) || isStatic(node)) return false
-        if (authPath(node.url)) return true
+        if (logoutOrRegistration(node.url) || isStatic(node) || isTelemetry(node)) return false
+        if (authPath(node.url) || authOperation(node)) return true
         val kinds = fields(node.event).keys.mapNotNull(::credentialKind).toSet()
         if (kinds.any { it in setOf("login", "password", "otp", "code_verifier", "code_challenge") }) return true
         if (looksRefresh(node)) return true
-        if (responseTokenKeys(node.event).isNotEmpty()) return true
-        val lower = node.url.lowercase(Locale.US)
-        return listOf(
-            "client_id=",
-            "redirect_uri=",
-            "response_type=",
-            "code_challenge=",
-            "code_verifier=",
-            "samlrequest=",
-            "samlresponse="
-        ).any(lower::contains)
+        return false
+    }
+
+    private fun authOperation(node: Node): Boolean {
+        val query = try { URL(node.url).query.orEmpty() } catch (_: Exception) { "" }
+        if (query.isBlank()) return false
+        val operationKeys = setOf("act", "action", "method", "operation", "op", "flow", "step")
+        return parseUrlEncoded(query).any { (key, value) ->
+            normalizeField(key) in operationKeys && authWord(value)
+        }
+    }
+
+    private fun authWord(value: String): Boolean {
+        val lower = normalizeField(value)
+        return listOf("auth", "login", "signin", "sign_in", "authorize", "token", "session", "sso", "verify", "password", "otp", "mfa", "2fa", "refresh").any(lower::contains)
     }
 
     private fun addPrepareRequest(nodes: List<Node>, hints: List<Hint>, loginIndex: Int, selected: MutableSet<Int>, origins: Set<String>) {
