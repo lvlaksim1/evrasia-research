@@ -8,12 +8,14 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import org.json.JSONObject
 import org.json.JSONTokener
+import kotlin.concurrent.thread
 
 internal class AuthSessionController(
     private val activity: AppCompatActivity,
     private val web: WebView
 ) {
     private var active = false
+    private var processing = false
     private var startRevision = -1L
     private var startTime = 0L
     private var beforeState: AuthFlowAnalyzer.BrowserState? = null
@@ -31,12 +33,15 @@ internal class AuthSessionController(
 
     fun isActive(): Boolean = active
 
+    fun isProcessing(): Boolean = processing
+
     fun toggle() {
+        if (processing) return
         if (active) finish() else start()
     }
 
     fun start() {
-        if (active) return
+        if (active || processing) return
         previousRecording = NetworkDebugStore.recording
         NetworkDebugStore.recording = true
         startRevision = NetworkDebugStore.revision()
@@ -56,16 +61,18 @@ internal class AuthSessionController(
     }
 
     fun finish() {
-        if (!active) return
+        if (!active || processing) return
         handler.removeCallbacks(hookRefresh)
         disableAuthHooks()
         captureState { after ->
             val before = beforeState
             active = false
+            processing = true
             beforeState = null
             val delta = NetworkDebugStore.delta(startRevision)
             restoreRecording()
             if (before == null) {
+                processing = false
                 beforeAuthSource = ""
                 Toast.makeText(activity, "Не найден начальный снимок AUTH-сессии", Toast.LENGTH_LONG).show()
                 return@captureState
@@ -74,33 +81,44 @@ internal class AuthSessionController(
                 val time = event.optLong("time", 0L)
                 time <= 0L || time >= startTime - 1500L
             }
-            try {
-                val initialAuthSource = beforeAuthSource
-                val result = UniversalAuthAnalyzerV2.analyze(events, before, after, initialAuthSource)
-                val environment = try {
-                    PostmanEnvironmentSnapshotSafe.build(result.collectionJson, events, initialAuthSource)
-                } catch (_: Exception) {
-                    ""
+            val initialAuthSource = beforeAuthSource
+            beforeAuthSource = ""
+            Toast.makeText(activity, "AUTH: анализирую ${events.size} сетевых событий…", Toast.LENGTH_SHORT).show()
+
+            thread(name = "web-research-auth-analyzer") {
+                try {
+                    val result = UniversalAuthAnalyzerV2.analyze(events, before, after, initialAuthSource)
+                    val environment = try {
+                        PostmanEnvironmentSnapshotSafe.build(result.collectionJson, events, initialAuthSource)
+                    } catch (_: Exception) {
+                        ""
+                    }
+                    activity.runOnUiThread {
+                        processing = false
+                        if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                        Toast.makeText(
+                            activity,
+                            "AUTH: ${result.confidence} · ${result.requestCount} запросов",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        PostmanDelivery.deliver(
+                            activity,
+                            result.collectionJson,
+                            result.loginUrl.ifBlank { after.url.ifBlank { before.url } },
+                            environment
+                        )
+                    }
+                } catch (error: Exception) {
+                    activity.runOnUiThread {
+                        processing = false
+                        if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                        Toast.makeText(
+                            activity,
+                            "AUTH-анализ: ${error.message ?: "не удалось построить коллекцию"}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
                 }
-                beforeAuthSource = ""
-                Toast.makeText(
-                    activity,
-                    "AUTH: ${result.confidence} · ${result.requestCount} запросов",
-                    Toast.LENGTH_SHORT
-                ).show()
-                PostmanDelivery.deliver(
-                    activity,
-                    result.collectionJson,
-                    result.loginUrl.ifBlank { after.url.ifBlank { before.url } },
-                    environment
-                )
-            } catch (error: Exception) {
-                beforeAuthSource = ""
-                Toast.makeText(
-                    activity,
-                    "AUTH-анализ: ${error.message ?: "не удалось построить коллекцию"}",
-                    Toast.LENGTH_LONG
-                ).show()
             }
         }
     }
