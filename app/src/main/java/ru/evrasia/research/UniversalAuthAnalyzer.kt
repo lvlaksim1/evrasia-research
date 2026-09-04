@@ -58,7 +58,9 @@ internal object UniversalAuthAnalyzer {
         causalEdges.removeAll { edge ->
             edge.consumer > authEndIndex || edge.producer > authEndIndex
         }
-        val stableEndIndex = stableAuthenticatedBoundary(nodes, selected, loginIndex, authEndIndex)
+        val changedCookieNames = changedCookies(before.nativeCookies, after.nativeCookies)
+        val stableEndIndex = authenticatedStateBoundary(nodes, selected, loginIndex, authEndIndex, changedCookieNames)
+            ?: stableAuthenticatedBoundary(nodes, selected, loginIndex, authEndIndex)
         if (stableEndIndex != null) {
             selected.removeAll { it > stableEndIndex }
             bindings.removeAll { binding ->
@@ -157,7 +159,7 @@ internal object UniversalAuthAnalyzer {
             items.put(item)
         }
 
-        val changedCookies = changedCookies(before.nativeCookies, after.nativeCookies)
+        val changedCookies = changedCookieNames
         val changedStorage = changedStorage(before, after)
         val realLogin = !login.event.optBoolean("_authSynthetic", false)
         val responseEvidence = hasResponse(login.event)
@@ -640,6 +642,37 @@ internal object UniversalAuthAnalyzer {
             if (isLogoutUrl(nodes[index].url)) return maxOf(loginIndex, index - 1)
         }
         return nodes.lastIndex
+    }
+
+    private fun authenticatedStateBoundary(
+        nodes: List<Node>,
+        selected: Set<Int>,
+        loginIndex: Int,
+        authEndIndex: Int,
+        changedCookieNames: List<String>
+    ): Int? {
+        if (changedCookieNames.isEmpty()) return null
+        val changed = changedCookieNames.map { it.lowercase(Locale.US) }.toSet()
+        return selected.asSequence()
+            .filter { it in (loginIndex + 1)..authEndIndex }
+            .sorted()
+            .firstOrNull { index ->
+                responseSetCookieNames(nodes[index].event).any { it.lowercase(Locale.US) in changed }
+            }
+    }
+
+    private fun responseSetCookieNames(event: JSONObject): Set<String> {
+        val out = linkedSetOf<String>()
+        responseHeaders(event).filter { it.first.equals("Set-Cookie", true) }.forEach { (_, value) ->
+            value.split("\n").forEach { line ->
+                line.split(Regex(",(?=[^;,=]+=[^;,]+(?:;|$))")).forEach { cookie ->
+                    val pair = cookie.trim().substringBefore(';')
+                    val split = pair.indexOf('=')
+                    if (split > 0) out.add(pair.substring(0, split).trim())
+                }
+            }
+        }
+        return out
     }
 
     private fun stableAuthenticatedBoundary(nodes: List<Node>, selected: Set<Int>, loginIndex: Int, authEndIndex: Int): Int? {
