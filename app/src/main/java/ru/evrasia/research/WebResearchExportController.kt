@@ -16,8 +16,9 @@ internal class WebResearchExportController(
     fun start() {
         captureSnapshot()
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val sourceUrl = web.url ?: ""
         ResultDelivery.deliverGeneratedFile(activity, "Экспорт ZIP", "web-research-$stamp.zip", "application/zip") { output ->
-            archive.writeZip(output, web.url ?: "")
+            archive.writeZip(output, sourceUrl)
         }
     }
 
