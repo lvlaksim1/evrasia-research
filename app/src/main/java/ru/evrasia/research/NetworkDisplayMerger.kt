@@ -31,6 +31,7 @@ internal object NetworkDisplayMerger {
             val incomingSources = NetworkEventClassifier.eventSources(event)
             val target = candidates
                 .filter { candidate -> NetworkEventClassifier.eventSources(candidate).intersect(incomingSources).isEmpty() }
+                .filter { candidate -> requestFingerprintsCompatible(candidate, event) }
                 .minByOrNull { candidate ->
                     val candidateTime = candidate.optLong("time", 0L)
                     if (time > 0L && candidateTime > 0L) abs(candidateTime - time) else Long.MAX_VALUE
@@ -96,6 +97,7 @@ internal object NetworkDisplayMerger {
         val firstSources = NetworkEventClassifier.eventSources(first)
         val secondSources = NetworkEventClassifier.eventSources(second)
         if (firstSources == secondSources || firstSources.intersect(secondSources).isEmpty()) return false
+        if (!requestFingerprintsCompatible(first, second)) return false
 
         var evidence = 0
         val firstSize = bestResponseSize(first)
@@ -138,6 +140,23 @@ internal object NetworkDisplayMerger {
     }
 
     private fun mergeKey(event: JSONObject): String = "${NetworkEventClassifier.methodOf(event)}\n${event.optString("url", "")}"
+
+    private fun requestFingerprint(event: JSONObject): String? {
+        val raw = event.optString("requestBody", "").trim()
+        if (raw.isBlank() || raw in setOf("[FormData]", "[unavailable]", "[binary]")) return null
+        val mime = event.optString("requestMimeType", "").lowercase()
+        return if (mime.contains("x-www-form-urlencoded") || (!raw.startsWith("{") && !raw.startsWith("[") && raw.contains('='))) {
+            raw.split('&').filter { it.isNotBlank() }.sorted().joinToString("&")
+        } else {
+            raw
+        }
+    }
+
+    private fun requestFingerprintsCompatible(first: JSONObject, second: JSONObject): Boolean {
+        val firstFingerprint = requestFingerprint(first)
+        val secondFingerprint = requestFingerprint(second)
+        return firstFingerprint == null || secondFingerprint == null || firstFingerprint == secondFingerprint
+    }
 
     private fun timesCompatible(first: JSONObject, second: JSONObject): Boolean {
         val firstTime = first.optLong("time", 0L)
