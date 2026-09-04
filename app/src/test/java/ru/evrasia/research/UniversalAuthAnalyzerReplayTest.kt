@@ -177,6 +177,7 @@ class UniversalAuthAnalyzerReplayTest {
     }
 
 
+    // Sanitized structural mirror of the uploaded full AUTH capture: duplicates, WebView API calls and delayed evidence.
     @Test
     fun reconstructsReplayableFlowFromFullCaptureShape() {
         val login = "user@example.test"
