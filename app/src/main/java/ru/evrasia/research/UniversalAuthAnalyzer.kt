@@ -587,9 +587,10 @@ internal object UniversalAuthAnalyzer {
 
     private fun isNoise(node: Node, origins: Set<String>): Boolean {
         if (isStatic(node)) return true
+        if (isTelemetry(node)) return true
         val nodeOrigin = origin(node.url)
         if (nodeOrigin.isNotBlank() && nodeOrigin !in origins && !isCrossOriginAuthBridge(node)) return true
-        return isTelemetry(node) && !hasCredentials(node.event) && responseTokenKeys(node.event).isEmpty()
+        return false
     }
 
     private fun isStatic(node: Node): Boolean {
@@ -601,11 +602,24 @@ internal object UniversalAuthAnalyzer {
 
     private fun documentLike(node: Node): Boolean = node.source == "navigation" || (node.method == "GET" && NetworkEventClassifier.responseKind(node.event) in setOf("HTML", "TEXT", "OTHER"))
     private fun isTelemetry(node: Node): Boolean { val path = try { URL(node.url).path.lowercase(Locale.US) } catch (_: Exception) { node.url.lowercase(Locale.US) }; return listOf("/collect", "/analytics", "/telemetry", "/metrics", "/metric/", "/pixel", "/watch/", "/track", "/counter", "/beacon").any(path::contains) || node.source == "beacon" }
-    private fun isCrossOriginAuthBridge(node: Node): Boolean { if (isStatic(node)) return false; val lower = node.url.lowercase(Locale.US); if (authPath(node.url) && (node.method in setOf("POST", "PUT", "PATCH") || hasCredentials(node.event))) return true; if (listOf("client_id=", "redirect_uri=", "response_type=", "code_challenge=", "samlrequest=", "samlresponse=").any(lower::contains)) return true; return responseTokenKeys(node.event).isNotEmpty() || requestHeaders(node.event).any { it.first.equals("Authorization", true) && it.second.isNotBlank() } }
+    private fun isCrossOriginAuthBridge(node: Node): Boolean {
+        if (isStatic(node) || isTelemetry(node)) return false
+        val lower = node.url.lowercase(Locale.US)
+        if (authPath(node.url) && (node.method in setOf("POST", "PUT", "PATCH") || hasCredentials(node.event))) return true
+        if (listOf("client_id=", "redirect_uri=", "response_type=", "code_challenge=", "samlrequest=", "samlresponse=").any(lower::contains)) return true
+        return responseTokenKeys(node.event).isNotEmpty() || requestHeaders(node.event).any { it.first.equals("Authorization", true) && it.second.isNotBlank() }
+    }
     private fun looksLikeLoginResponse(event: JSONObject, url: String): Boolean { val body = responseBody(event).lowercase(Locale.US); if (body.isBlank()) return false; val password = body.contains("type=\"password\"") || body.contains("type='password'") || body.contains("name=\"password\"") || body.contains("name='password'"); return password && (authPath(url) || body.contains("login") || body.contains("signin") || body.contains("username")) }
     private fun looksRefresh(node: Node): Boolean { val lower = node.url.lowercase(Locale.US); return lower.contains("refresh") || fields(node.event).keys.any { normalizeField(it).contains("refresh_token") || normalizeField(it) == "refresh" } }
     private fun logoutOrRegistration(url: String): Boolean { val lower = url.lowercase(Locale.US); return listOf("logout", "signout", "sign-out", "register", "signup", "sign-up", "create-account", "reset-password", "forgot-password").any(lower::contains) }
-    private fun authPath(url: String): Boolean { val lower = url.lowercase(Locale.US); return listOf("/auth", "/login", "/signin", "/sign-in", "/token", "/session", "/oauth", "/sso", "/verify", "/otp", "/mfa", "/2fa", "/refresh", "/callback").any(lower::contains) }
+    private fun authPath(url: String): Boolean {
+        val lower = try {
+            URL(url).path.lowercase(Locale.US)
+        } catch (_: Exception) {
+            url.substringBefore('?').substringBefore('#').lowercase(Locale.US)
+        }
+        return listOf("/auth", "/login", "/signin", "/sign-in", "/token", "/session", "/oauth", "/sso", "/verify", "/otp", "/mfa", "/2fa", "/refresh", "/callback").any(lower::contains)
+    }
     private fun hasResponse(event: JSONObject): Boolean = event.optInt("status", 0) > 0 || responseHeaders(event).isNotEmpty() || responseBody(event).let { it.isNotBlank() && it !in setOf("[binary]", "[non-text response]", "[unavailable]") }
     private fun responseBody(event: JSONObject): String = NetworkEventClassifier.responseBodyText(event)
     private fun requestMaterial(event: JSONObject): String = buildString { append(event.optString("url", "")).append('\n'); requestHeaders(event).forEach { append(it.first).append(':').append(it.second).append('\n') }; append(event.optString("requestBody", "")) }
