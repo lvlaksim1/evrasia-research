@@ -193,9 +193,7 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         }
         addControl(recordButton)
         addControl(chromeButton("⌫", "Очистить журнал") {
-            if (!NetworkRequestActions.clearFullSession(this)) NetworkDebugStore.clear()
-            refreshIncremental(force = true)
-            Toast.makeText(this, "Журнал и данные текущего ZIP очищены", Toast.LENGTH_SHORT).show()
+            showClearOptions()
         })
         menuButton = chromeButton("☰", "Меню") { showNetworkMenu(it) }
         controls.addView(menuButton, LinearLayout.LayoutParams(dp(44), dp(44)))
@@ -209,6 +207,28 @@ class NetworkDebuggerActivity : AppCompatActivity() {
         }
         ViewCompat.requestApplyInsets(root)
         refreshIncremental(force = true)
+    }
+
+    private fun showClearOptions() {
+        AlertDialog.Builder(this)
+            .setTitle("Очистить")
+            .setItems(arrayOf("Журнал и данные ZIP", "Журнал, данные ZIP и все cookies")) { dialog, which ->
+                dialog.dismiss()
+                if (!NetworkRequestActions.clearFullSession(this)) NetworkDebugStore.clear()
+                refreshIncremental(force = true)
+                if (which == 1) {
+                    CookieManager.getInstance().removeAllCookies {
+                        CookieManager.getInstance().flush()
+                        runOnUiThread {
+                            Toast.makeText(this, "Журнал, данные ZIP и cookies очищены", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } else {
+                    Toast.makeText(this, "Журнал и данные текущего ZIP очищены", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     private fun chromeButton(symbol: String, description: String, click: (View) -> Unit) = Button(this).apply {
