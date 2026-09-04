@@ -201,7 +201,18 @@ internal object UniversalAuthAnalyzer {
             .put("item", items)
             .put("variable", variableArray)
 
-        return AuthFlowAnalyzer.Result(collection.toString(2), confidence, items.length(), login.url, notes)
+        val replayValidation = PostmanReplayabilityValidator.validate(collection.toString())
+        val finalConfidence = if (replayValidation.ok) confidence else "LOW"
+        if (!replayValidation.ok) {
+            replayValidation.issues.forEach { issue -> notes.add("REPLAYABILITY: $issue") }
+            val info = collection.getJSONObject("info")
+            info.put(
+                "description",
+                info.optString("description", "") + "\n\nReplayability validation: FAILED\n" + replayValidation.issues.joinToString("\n") { "- $it" }
+            )
+        }
+
+        return AuthFlowAnalyzer.Result(collection.toString(2), finalConfidence, items.length(), login.url, notes)
     }
 
     private fun prepare(events: List<JSONObject>): Pair<List<Node>, List<Hint>> {
