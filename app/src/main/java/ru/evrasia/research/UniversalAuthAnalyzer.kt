@@ -439,52 +439,93 @@ internal object UniversalAuthAnalyzer {
     }
 
     private fun attachReplayRedirectEvidence(events: MutableList<JSONObject>) {
-        events.withIndex()
-            .filter { entry ->
-                val event = entry.value
-                event.optString("source", "") == "resource-copy" &&
-                    event.optString("redirectURL", "").isNotBlank() &&
-                    event.optString("url", "").startsWith("http")
+        events.withIndex().forEach { parentEntry ->
+            val parent = parentEntry.value
+            val evidenceEvents = mutableListOf<JSONObject>()
+            if (parent.optString("source", "") == "resource-copy") evidenceEvents.add(parent)
+            parent.optJSONArray("_mergedEvents")?.let { merged ->
+                for (index in 0 until merged.length()) {
+                    val raw = merged.optJSONObject(index) ?: continue
+                    if (raw.optString("source", "") == "resource-copy") evidenceEvents.add(raw)
+                }
             }
-            .forEach { evidence ->
-                val event = evidence.value
-                val url = normalizeUrl(event.optString("url", ""))
-                val time = event.optLong("time", 0L)
-                val candidate = events.withIndex()
-                    .asSequence()
-                    .filter { it.index < evidence.index }
-                    .filter { entry ->
-                        val source = entry.value.optString("source", "")
-                        val method = NetworkEventClassifier.methodOf(entry.value).ifBlank { entry.value.optString("method", "GET") }
-                        val candidateTime = entry.value.optLong("time", 0L)
-                        source != "resource-copy" &&
-                            method.equals("GET", true) &&
-                            normalizeUrl(entry.value.optString("url", "")) == url &&
-                            (time <= 0L || candidateTime <= 0L || time - candidateTime in 0L..60_000L)
+
+            evidenceEvents
+                .distinctBy { raw ->
+                    listOf(
+                        raw.optLong("time", 0L).toString(),
+                        normalizeUrl(raw.optString("url", "")),
+                        raw.optString("redirectURL", "")
+                    ).joinToString("|")
+                }
+                .forEach { evidence ->
+                    val observedRedirect = evidence.optString("redirectURL", "")
+                    val evidenceUrl = normalizeUrl(evidence.optString("url", ""))
+                    if (observedRedirect.isBlank() || evidenceUrl.isBlank()) return@forEach
+
+                    val evidenceTime = evidence.optLong("time", 0L)
+                    val parentMethod = NetworkEventClassifier.methodOf(parent).ifBlank { parent.optString("method", "GET") }
+                    val parentMatches = parent.optString("source", "") != "resource-copy" &&
+                        parentMethod.equals("GET", true) &&
+                        normalizeUrl(parent.optString("url", "")) == evidenceUrl
+
+                    val candidateEntry = if (parentMatches) {
+                        parentEntry
+                    } else {
+                        events.withIndex()
+                            .asSequence()
+                            .filter { it.index <= parentEntry.index }
+                            .filter { entry ->
+                                val event = entry.value
+                                val source = event.optString("source", "")
+                                val method = NetworkEventClassifier.methodOf(event).ifBlank { event.optString("method", "GET") }
+                                val eventTime = event.optLong("time", 0L)
+                                source != "resource-copy" &&
+                                    method.equals("GET", true) &&
+                                    normalizeUrl(event.optString("url", "")) == evidenceUrl &&
+                                    (evidenceTime <= 0L || eventTime <= 0L || evidenceTime - eventTime in 0L..60_000L)
+                            }
+                            .maxByOrNull { it.value.optLong("time", 0L) }
+                    } ?: return@forEach
+
+                    val candidate = candidateEntry.value
+                    candidate.put("_authObservedRedirect", observedRedirect)
+
+                    val observedCookieNames = responseSetCookieNames(evidence)
+                    if (observedCookieNames.isNotEmpty()) {
+                        candidate.put("_authObservedSetCookieNames", JSONArray(observedCookieNames.toList()))
                     }
-                    .maxByOrNull { it.value.optLong("time", 0L) }
-                    ?.value
-                    ?: return@forEach
-                val observedRedirect = event.optString("redirectURL", "")
-                candidate.put("_authObservedRedirect", observedRedirect)
-                val observedCookieNames = responseSetCookieNames(event)
-                if (observedCookieNames.isNotEmpty()) candidate.put("_authObservedSetCookieNames", JSONArray(observedCookieNames.toList()))
-                val candidateIndex = events.indexOf(candidate)
-                if (candidateIndex >= 0 && observedRedirect.isNotBlank()) {
-                    val actualTarget = (candidateIndex + 1 until evidence.index)
-                        .asSequence()
-                        .map { index -> events[index] }
+
+                    val candidateTime = candidate.optLong("time", 0L)
+                    val actualTarget = events.asSequence()
+                        .filter { target -> target !== candidate }
                         .filter { target ->
                             val source = target.optString("source", "")
                             val method = NetworkEventClassifier.methodOf(target).ifBlank { target.optString("method", "GET") }
-                            source != "resource-copy" && method.equals("GET", true) && target.optString("url", "").startsWith("http")
+                            val targetTime = target.optLong("time", 0L)
+                            source != "resource-copy" &&
+                                method.equals("GET", true) &&
+                                target.optString("url", "").startsWith("http") &&
+                                (candidateTime <= 0L || targetTime <= 0L || targetTime >= candidateTime) &&
+                                (evidenceTime <= 0L || targetTime <= 0L || targetTime <= evidenceTime + 2_000L)
                         }
-                        .firstOrNull { target -> navigationTargetMatches(observedRedirect, target.optString("url", "")) }
+                        .filter { target -> navigationTargetMatches(observedRedirect, target.optString("url", "")) }
+                        .minByOrNull { target ->
+                            val targetTime = target.optLong("time", 0L)
+                            if (candidateTime > 0L && targetTime > 0L) targetTime - candidateTime else Long.MAX_VALUE
+                        }
                         ?.optString("url", "")
                         .orEmpty()
+
                     if (actualTarget.isNotBlank()) candidate.put("_authObservedRedirectTarget", actualTarget)
+
+                    val redirectSource = candidate.optJSONObject("_fieldSources")?.optString("redirectURL", "").orEmpty()
+                    if (redirectSource == "resource-copy") {
+                        candidate.remove("redirectURL")
+                        candidate.optJSONObject("_fieldSources")?.remove("redirectURL")
+                    }
                 }
-            }
+        }
     }
 
     private fun correlationScore(hint: Hint, event: JSONObject): Int {
