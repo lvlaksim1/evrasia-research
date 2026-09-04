@@ -19,6 +19,12 @@ object NetworkRequestActions {
         browser.captureResearchSnapshot()
     }
 
+    fun clearFullSession(activity: Activity): Boolean {
+        val browser = activeBrowser(activity) ?: return false
+        browser.clearResearchSession()
+        return true
+    }
+
     fun writeFullExport(activity: Activity, output: OutputStream): Boolean {
         val browser = activeBrowser(activity) ?: return false
         val archive = archiveOf(browser) ?: return false
