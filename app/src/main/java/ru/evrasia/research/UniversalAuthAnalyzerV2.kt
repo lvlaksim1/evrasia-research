@@ -107,7 +107,7 @@ internal object UniversalAuthAnalyzerV2 {
 
         val notes = base.notes.toMutableList()
         if (dynamicCount > 0) notes.add("Added $dynamicCount dynamic HTML/inline-script response → request dependencies")
-        notes.add("Postman verification tests were added for login/session-check steps")
+        notes.add("Postman verification test was added for the captured login step")
 
         return AuthFlowAnalyzer.Result(
             collectionJson = collection.toString(2),

@@ -40,38 +40,37 @@ internal object UniversalAuthAnalyzer {
             val node = nodes[index]
             if (isNoise(node, origins)) return@forEach
             val close = node.time <= 0L || login.time <= 0L || abs(node.time - login.time) <= 120_000L
-            if (close && (node.event.optBoolean("_authFormCorrelated", false) || scores[index] >= 11)) selected.add(index)
+            if (close && isExplicitAuthStep(node)) selected.add(index)
         }
+
+        addPrepareRequest(nodes, hints, loginIndex, selected, origins)
 
         val producers = collectProducers(nodes, hints)
         val bindings = mutableListOf<Binding>()
         val usedVariables = linkedSetOf<String>()
-        nodes.indices.forEach { consumer ->
-            val node = nodes[consumer]
-            if (isNoise(node, origins)) return@forEach
-            val strongConsumer = consumer in selected || score(node) >= 7 || node.event.optBoolean("_authFormCorrelated", false)
-            if (!strongConsumer) return@forEach
-            val material = requestMaterial(node.event)
-            producers.asSequence()
-                .filter { it.index < consumer && reusable(it.value) && containsMaterial(material, it.value) }
-                .sortedByDescending { it.index }
-                .take(6)
-                .forEach { producer ->
-                    if (bindings.any { it.producer.index == producer.index && it.consumer == consumer && it.producer.value == producer.value }) return@forEach
-                    val variable = uniqueVariable(canonicalVariable(producer.key), usedVariables)
-                    usedVariables.add(variable)
-                    bindings.add(Binding(producer, consumer, variable))
-                    if (producer.index >= 0) selected.add(producer.index)
-                    selected.add(consumer)
-                }
+        var dependencyChanged = true
+        while (dependencyChanged) {
+            dependencyChanged = false
+            val consumers = selected.toList().sorted()
+            consumers.forEach { consumer ->
+                val node = nodes[consumer]
+                if (isNoise(node, origins)) return@forEach
+                val material = requestMaterial(node.event)
+                producers.asSequence()
+                    .filter { it.index < consumer && reusable(it.value) && containsMaterial(material, it.value) }
+                    .sortedByDescending { it.index }
+                    .take(6)
+                    .forEach { producer ->
+                        if (bindings.any { it.producer.index == producer.index && it.consumer == consumer && it.producer.value == producer.value }) return@forEach
+                        val variable = uniqueVariable(canonicalVariable(producer.key), usedVariables)
+                        usedVariables.add(variable)
+                        bindings.add(Binding(producer, consumer, variable))
+                        if (producer.index >= 0 && selected.add(producer.index)) dependencyChanged = true
+                    }
+            }
         }
 
-        addPrepareRequest(nodes, hints, loginIndex, selected, origins)
-        val verifyIndex = chooseVerify(nodes, loginIndex, before, after, origins)
-        if (verifyIndex != null) selected.add(verifyIndex)
-        nodes.indices.forEach { index ->
-            if (index > loginIndex && index <= minOf(nodes.lastIndex, loginIndex + 25) && looksRefresh(nodes[index]) && !isNoise(nodes[index], origins)) selected.add(index)
-        }
+        val verifyIndex: Int? = null
 
         val replacements = linkedMapOf<String, String>()
         val variables = linkedMapOf<String, VariableDef>()
@@ -241,6 +240,26 @@ internal object UniversalAuthAnalyzer {
         if (isStatic(node)) value -= 30
         if (isTelemetry(node) && !hasCredentials(node.event)) value -= 18
         return value
+    }
+
+    private fun isExplicitAuthStep(node: Node): Boolean {
+        if (node.event.optBoolean("_authFormCorrelated", false)) return true
+        if (logoutOrRegistration(node.url) || isStatic(node)) return false
+        if (authPath(node.url)) return true
+        val kinds = fields(node.event).keys.mapNotNull(::credentialKind).toSet()
+        if (kinds.any { it in setOf("login", "password", "otp", "code_verifier", "code_challenge") }) return true
+        if (looksRefresh(node)) return true
+        if (responseTokenKeys(node.event).isNotEmpty()) return true
+        val lower = node.url.lowercase(Locale.US)
+        return listOf(
+            "client_id=",
+            "redirect_uri=",
+            "response_type=",
+            "code_challenge=",
+            "code_verifier=",
+            "samlrequest=",
+            "samlresponse="
+        ).any(lower::contains)
     }
 
     private fun addPrepareRequest(nodes: List<Node>, hints: List<Hint>, loginIndex: Int, selected: MutableSet<Int>, origins: Set<String>) {
