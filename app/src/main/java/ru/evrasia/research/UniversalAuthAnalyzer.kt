@@ -84,24 +84,29 @@ internal object UniversalAuthAnalyzer {
         val verifyIndex: Int? = null
 
         val replacements = linkedMapOf<String, String>()
+        val userReplacements = linkedMapOf<String, String>()
         val variables = linkedMapOf<String, VariableDef>()
         val unresolvedVariables = linkedSetOf<String>()
-        bindings.forEach { binding ->
-            replacements.putIfAbsent(binding.producer.value, binding.variable)
-            variables.putIfAbsent(binding.variable, VariableDef(binding.variable, "", "Automatically extracted from an earlier AUTH response"))
-        }
 
         selected.sorted().forEach { index ->
             credentialValues(nodes[index].event).forEach { (raw, kind) ->
-                if (kind !in setOf("login", "password", "otp")) return@forEach
-                if (raw.isBlank() || raw == "[password]" || replacements.containsKey(raw)) return@forEach
-                val variable = uniqueVariable(kind, usedVariables)
+                if (kind !in setOf("login", "password", "otp") || raw.isBlank()) return@forEach
+                val variable = if (kind !in usedVariables) kind else uniqueVariable(kind, usedVariables)
                 usedVariables.add(variable)
-                replacements[raw] = variable
+                if (raw != "[password]") userReplacements.putIfAbsent(raw, variable)
                 variables.putIfAbsent(variable, VariableDef(variable, "", credentialDescription(kind)))
             }
         }
-        if (selected.any { index -> fields(nodes[index].event).keys.any(::isPasswordField) }) variables.putIfAbsent("password", VariableDef("password", "", credentialDescription("password")))
+        if (selected.any { index -> fields(nodes[index].event).keys.any(::isPasswordField) }) {
+            variables.putIfAbsent("password", VariableDef("password", "", credentialDescription("password")))
+            usedVariables.add("password")
+        }
+
+        replacements.putAll(userReplacements)
+        bindings.forEach { binding ->
+            variables.putIfAbsent(binding.variable, VariableDef(binding.variable, "", "Automatically extracted from an earlier AUTH response"))
+            if (binding.producer.value !in userReplacements) replacements.putIfAbsent(binding.producer.value, binding.variable)
+        }
         addUnresolvedDynamicVariables(nodes, selected, replacements, variables, usedVariables, unresolvedVariables)
         addAuthHeaderVariables(nodes, selected, replacements, variables, usedVariables, unresolvedVariables)
         addUsedStorageVariables(nodes, selected, before, after, replacements, variables, usedVariables, unresolvedVariables)
@@ -120,7 +125,7 @@ internal object UniversalAuthAnalyzer {
             val request = JSONObject()
                 .put("method", "GET")
                 .put("header", JSONArray())
-                .put("url", portableUrl(before.url, baseOrigin, replacements))
+                .put("url", portableUrl(before.url, baseOrigin, userReplacements))
                 .put("description", "AUTH provenance:\n- Seed: captured initial browser page used to establish cookies / page state before the proven causal AUTH component.")
             val item = JSONObject().put("name", "%02d Prepare authentication page".format(Locale.US, sequence++)).put("request", request)
             val tests = testsFor(bindingByProducer[-1].orEmpty())
@@ -130,7 +135,15 @@ internal object UniversalAuthAnalyzer {
 
         chosen.forEach { index ->
             val node = nodes[index]
-            val request = buildRequest(node.event, node.method, node.url, baseOrigin, replacements)
+            val stepReplacements = linkedMapOf<String, String>()
+            stepReplacements.putAll(userReplacements)
+            bindings.filter { binding -> binding.consumer == index && binding.producer.index < index }.forEach { binding ->
+                if (binding.producer.value !in userReplacements) stepReplacements[binding.producer.value] = binding.variable
+            }
+            replacements.forEach { (raw, variable) ->
+                if (variable in unresolvedVariables && containsMaterial(requestMaterial(node.event), raw)) stepReplacements.putIfAbsent(raw, variable)
+            }
+            val request = buildRequest(node.event, node.method, node.url, baseOrigin, stepReplacements)
             request.put("description", provenanceDescription(index, loginIndex, bindings, causalEdges, stepNumbers))
             val item = JSONObject()
                 .put("name", "%02d %s · %s %s".format(Locale.US, sequence++, role(index, loginIndex, verifyIndex, node), node.method, compact(node.url)))
